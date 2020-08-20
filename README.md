@@ -1,3 +1,3 @@
 # StephenKnappGithubRepot
 
-This repo is my professional data science and machine learning portfolio initiated on August 8th, 2020.
+This repo is my professional data science and machine learning portfolio initiated in August 2020.
