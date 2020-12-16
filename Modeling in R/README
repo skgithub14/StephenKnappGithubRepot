@@ -1,0 +1,11 @@
+This folder contains my example code in R of creating and analyzing mathematical models in R.
+
+The following types of models and supporting techniques can be found here:
+- Linear Discriminate Analysis (LDA)
+- Quadratic Discriminate Analysis (QDA)
+- k-Nearest Neighbors (KNN)
+- Principle Component Analysis (PCA)
+- Cluster Analysis
+- Neural Networks (simple)
+- Support Vector Machines (SVM)
+- Tree based models (mostly Random Forests)
