@@ -1,0 +1,782 @@
+---
+title: 'CSCI E-63C: Week 7 -- Midterm Exam'
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+```{r}
+library(ISLR)
+library(leaps)
+library(ggplot2)
+library(glmnet)
+library(car)
+library(knitr)
+library(GGally)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Introduction
+
+*The goal of the midterm exam is to apply some of the methods covered in our course by now to a new dataset.  We will work with the data characterizing real estate valuation in New Taipei City, Taiwan that is available at [UCI ML repository](https://archive.ics.uci.edu/ml/datasets/Real+estate+valuation+data+set) as well as at this course website on canvas. The overall goal will be to use data modeling approaches to understand which attributes available in the dataset influence real estate valuation the most.  The outcome attribute (Y -- house price of unit area) is inherently continuous, therefore representing a regression problem.*
+
+*For more details please see dataset description available at UCI ML or corresponding [HTML file](https://canvas.harvard.edu/files/8396679/download?download_frd=1) in this course website on canvas.  For simplicity, clarity and to decrease your dependency on the network reliability and UCI ML or canvas website availability during the week that you will be working on this project you are advised to download data made available in this course canvas website to your local folder and work with this local copy. The dataset at UCI ML repository as well as its copy on our course canvas website is made available as an Excel file [Real estate valuation data set.xlsx](https://canvas.harvard.edu/files/8396680/download?download_frd=1) -- you can either use `read_excel` method from R package `readxl` to read this Excel file directly or convert it to comma or tab-delimited format in Excel so that you can use `read.table` on the resulting file with suitable parameters (and, of course, remember to double check that in the end what you have read into your R environment is what the original Excel file contains).*
+
+*Finally, as you will notice, the instructions here are terser than in the previous weekly problem sets. We expect that you use what you've learned in the class to complete the analysis and draw appropriate conclusions based on the data.  The approaches that you are expected to apply here have been exercised in the preceeding weeks -- please feel free to consult your submissions and/or official solutions as to how they have been applied to different datasets.  As always, if something appears to be unclear, please ask questions -- we may change to private mode those that in our opinion reveal too many details as we see fit.*
+
+# Sub-problem 1: load and summarize the data (20 points)
+
+*Download and read in the data, produce numerical and graphical summaries of the dataset attributes, decide whether they can be used for modeling in untransformed form or any transformations are justified, comment on correlation structure and whether some of the predictors suggest relationship with the outcome.*
+
+```{r}
+#read in CSV file with header and comma separator
+raw.data <- read.table("Real estate valuation data set.csv", 
+                       header=T, sep = ",")
+
+#remove duplicate row number column
+raw.data[,1] <- NULL
+
+#make column names succinct
+colnames(raw.data) = c("Date", "HouseAge", "DisttoMRT", "Stores", "Lat", 
+                       "Long", "PricePerPing")
+
+#check data head
+head(raw.data)
+```
+
+
+```{r}
+#view basic dataframe information
+str(raw.data)
+dim(raw.data)
+summary(raw.data)
+```
+
+```{r fig.width=15, fig.height=15}
+#examine pairs plots, data distributions, and correlation coefficients
+ggpairs(raw.data, progress = FALSE)
+```
+
+
+
+```{r fig.width=15, fig.height=8}
+#examining discrete predictors using boxplots to see trends
+#Let's look the impact of month affects the outcome
+boxplot(PricePerPing~Date, raw.data)
+```
+
+```{r fig.width=15, fig.height=8}
+#Let's look at how the number of stores affects the outcome.
+boxplot(PricePerPing~Stores, raw.data)
+```
+
+DATE:
+
+The Date appears to have a flat trend in relation to the Price per Ping.  The distribution of the data appears to be fairly even.  
+
+In the boxplot, there is a possible seasonal trend, but that is tough to confirm with only one year's worth of data.  Lower Pricing/Ping occurs in late 2012 and rises in earyly 2013.  
+
+Note the extreme outlier in April 2013.  This same outlier showed up in the pairs plot and I am considering removing it because it may not be representative of the local housing market.  
+
+A transformation does not appear necessary at this point.
+
+HOUSE AGE:
+
+The age of the house has a two peak distribution and it's spread with respect to Price Per Ping appears to have a concave shape in the center.  This could make it a good candidate for a square root transformation.
+
+DISTANCE TO MRT:
+
+The distance to the MRT appears to have a cluster of values to the left with respect to Price per Ping.  A log transform may be beneficial to improve the variance of the data.  Also note that the pair plots between the distance to the MRT and both latitude and longitude appear to have two tails.  This could indicate that the MRT stations are clustered around certain lines of latitude and longitude which makes sense given how most city public transportation systems are set-up.
+
+NUMBER OF STORES IN THE VICINITY:
+
+The number of stores in the vicinity also appears to have a positive linear relationship with Price per Ping. The distribution of Stores itself has two peaks with one of them towards the far left of the graph.  This may indicate the log transform is necessary.  
+
+In the boxplot, there appears to be an upward trend in the data.  Price/Ping increases with the number of stores.  
+
+LATITUDE:
+
+Latitude appears to be the most normally distributed of all the predictors however the left side is a much gentler slope than the right.  This could be a candidate for a transformation.
+
+LONGITUDE:
+
+The longitude appears to be right skewed with a smaller second peak in the center.  There appears to be a positive linear relationship emerging between it and Price per Ping but there is still a lack of spread of the data in the right side of the pair plot.  This could also be a candidate for a transformation.  
+
+PRICE PER PING:
+
+The price per ping appears somewhat normally distributed but with a left skew.  This could also be a candidate for transformation.
+
+CORRELATION VALUES:
+
+Notice the higher abosolute correlation value between the distance to the MRT and longitude.  This could indicate collinearity between the two predictors.  Physically it could mean that the MRT stations are clustered around lines on longitude.  
+
+The abosolute correlation values between Price per Ping are highest for distance to the MRT indicating a potentially strong predictor.  
+
+The correlations values are just above .5 for stores, latitude, and longitude which should be noted. These could become more important predictors after transformatoin.
+
+Correlation to the outcome is small for house age and very small for date.
+
+```{r}
+#Square root transform all data
+square.root.transformed.cols <- c("Date","DisttoMRT","HouseAge","Stores","Lat","Long","PricePerPing")
+
+square.root.data <- raw.data
+
+for(i in square.root.transformed.cols){
+    square.root.data[i] <- sqrt(square.root.data[i])
+}
+```
+
+```{r}
+#Log transform all data, note I'm adding 1 prior to the log transform to 
+#remove an log(0) issues
+log.transformed.cols <- c("Date","DisttoMRT","HouseAge","Stores","Lat",
+                          "Long","PricePerPing")
+
+log.data <- raw.data
+
+for(i in log.transformed.cols){
+    log.data[i] <- log(log.data[i] + 1)
+}
+```
+
+```{r}
+#Invert tranform all data, note adding .001 before the tranformation to 
+#eliminate any 1/0 issues
+invert.transformed.cols <- c("Date","DisttoMRT","HouseAge","Stores","Lat",
+                             "Long","PricePerPing")
+
+invert.data <- raw.data
+
+for(i in invert.transformed.cols){
+    invert.data[i] <- 1/(invert.data[i])
+}
+```
+
+```{r fig.width=15, fig.height=8}
+ggpairs(raw.data, progress = FALSE)
+ggpairs(square.root.data, progress = FALSE)
+ggpairs(log.data, progress = FALSE)
+ggpairs(invert.data, progress = FALSE)
+```
+
+Comparing the pair plots and data distributions between transformations the following observations were made:
+
+DATE:
+The log transform shows the most even spread of data with a slight positive correlation with price per ping.  The correlation value stayed more or less the same.  The absolute correlation value decreased slightly but this is of little significance.
+
+HOUSE AGE:
+See zoomed in scatter plots below for analysis.
+
+DISTANCE TO MRT:
+The log transform has the most even spread of data and has a negative linear trend with price per ping.  The absolute correlation value with price per pring increased after the transformation.  
+
+STORES:
+See zoomed in scatter plots below for analysis.
+
+LATITUDE:
+The log transform has the most even spread of data and has a positive linear trend with price per ping.  The absolute correlation value with price per pring increased after the transformation.  
+
+LONGITUDE:
+The log transform has the most even spread of data and has a positive linear trend with price per ping.  The absolute correlation value with price per pring increased after the transformation.  
+
+PRICE PER PING:
+The square transform has the best spread of the data however the log transform also has an acceptable spread.
+
+In all cases the inversion transformation is not optimal.
+
+```{r}
+#Taking a closer look at the House Age data and how transformations affect its
+#spread
+scatter.smooth(raw.data$HouseAge,raw.data$PricePerPing)
+scatter.smooth(square.root.data$HouseAge,square.root.data$PricePerPing)
+scatter.smooth(log.data$HouseAge,log.data$PricePerPing)
+```
+
+These scatter plots confirm the best data spread is the untranfromed variable HouseAge.  There is a slight negative linear trend.  
+
+```{r}
+scatter.smooth(raw.data$Stores,raw.data$PricePerPing)
+scatter.smooth(square.root.data$Stores,square.root.data$PricePerPing)
+scatter.smooth(log.data$Stores,log.data$PricePerPing)
+```
+
+The zoomed in scatterplot of the Stores vs Price per Ping shows that best spread of the data is the untransformed variable.  It should be noted that using the untransformed variable does not eliminate the outlier effect as effectively as the transformations.  There is a slight positive linear correlation between the Stores and the Price per Ping.  
+
+```{r}
+#Now let's try a mixed transformation data set
+predictor.transformed.data <- raw.data
+
+predictor.transformed.data$Date <- log.data$Date
+predictor.transformed.data$DisttoMRT <- log.data$DisttoMRT
+predictor.transformed.data$Lat <- log.data$Lat
+predictor.transformed.data$Long <- log.data$Long
+
+colnames(predictor.transformed.data) <- c("logDate","HouseAge","logDisttoMRT","Stores","logLat","logLong",
+                                          "PricePerPing")
+
+```
+
+```{r}
+#square root the outcome vector
+square.root.outcome.transformed.data <- predictor.transformed.data
+
+square.root.outcome.transformed.data$PricePerPing <- sqrt(square.root.outcome.transformed.data$PricePerPing)
+```
+
+```{r}
+#log transform the outcome vector
+log.outcome.transformed.data <- predictor.transformed.data
+
+log.outcome.transformed.data$PricePerPing <- log(
+    log.outcome.transformed.data$PricePerPing + 1)
+```
+
+
+```{r fig.width=15, fig.height=8}
+#pairs plots to compare transformed predictors to transformed outcome
+ggpairs(predictor.transformed.data, progress = FALSE)
+ggpairs(square.root.outcome.transformed.data, progress = FALSE)
+ggpairs(log.outcome.transformed.data, progress = FALSE)
+```
+
+This pairs plot above shows an optimal spreads of the outcome variable using either a log or a squared transformation.  Because we are using the log transform and no squared transforms for the predictor variable, I choose the log transform for the outcome.
+
+Notice that the correlation values for Distance to MRT, Stores, Latitude and Longitude all increase when the outcome variable is also transformed.  
+
+In summary the selected transformations are to log all predictors variables except House Age and Stores and log the Price per Ping.  Again, a 1 is added to each data point before the log transform to prevent any log(0) issues.
+
+```{r}
+#rename columns for clarity
+colnames(log.outcome.transformed.data) <- c("logDate","HouseAge","logDisttoMRT","Stores","logLat","logLong",
+                                            "logPricePerPing")
+```
+
+Scaling the predictors was tested but there was no apparent value added to the model.
+
+# Sub-problem 2: multiple linear regression model (25 points)
+
+*Using function `lm` fit model of outcome as linear function of all predictors in the dataset. Present and discuss diagnostic plots. Report 99% confidence intervals for model parameters that are statistically significantly associated with the outcome and discuss directions of those associations. Obtain mean prediction (and corresponding 90% confidence interval) for a new observation with each attribute set to average of the observations in the dataset. Describe evidence for potential collinearity among predictors in the model.*
+
+```{r}
+my.model <- lm(logPricePerPing~.,log.outcome.transformed.data)
+my.model.summary <- summary(my.model)
+my.model
+my.model.summary
+```
+
+log of Date, House Age, log of Distance to MRT, and log of Latitude are all highly significant coefficients in this model.  Store is also significant but not to as high of a degree.
+
+The R-squared and adjusted R-squared are both around 70% which indicates that 70% of the variation of the outcome can be explained by the model.
+
+The overall p-value of the F-statistic is very small which indicates the model is highly significant as a whole and is a significantly better predictor than using the expected value of the outcome as a predictor.  
+
+```{r fig.width=10, fig.height=10}
+old.par <- par(mfrow=c(2,2),ps=16)
+
+plot(my.model)
+```
+
+Residuals vs Fitted: There is a relatively even spread of the data in both dimensions with a relatively flat and straight fit line.  Data point 114, 149, and 271 are outliers.
+
+Normal Q-Q Plot: The line is relatively straight but it's tail effects are significant due to the outliers.  Normality of the data could be improved by removing the outliers.
+
+Scale-Location Plot: The spread of the data is both axis is relatively even and the fit line is flat and straight.  Again the same three outliers are negatively impacting the spread.
+
+Residuals vs Leverage:  We see the same three outliers causing potential issue however none of them exceed the 0.5 cook's distance.  
+
+Let's consider removing the three outliers by examining them individually.
+
+Outlier 114: The value is a model outlier because the price per ping was so low.  There is likely a special feature or recording error here.  I will remove this.
+
+Outlier 149: The value is a model outlier because of several factors that include distance to MRT, stores, and latitude.  The price per pint was not an outlier itself therefore we will not remove this value.  
+
+Outlier 271: The value was much much higher than the price per ping of other homes.  There is likely a special feature or recording error here.  I will remove this.
+
+```{r}
+log.outcome.transformed.data.remove.outliers <- 
+    log.outcome.transformed.data[-c(114,271),]
+```
+
+```{r}
+mean(log.outcome.transformed.data.remove.outliers[,3])
+```
+
+
+```{r}
+my.model1 <- lm(logPricePerPing~.,log.outcome.transformed.data.remove.outliers)
+my.model.summary1 <- summary(my.model1)
+my.model1
+my.model.summary1
+```
+
+The outlier removed model shows all predictor variables are now significant.  The p-values or all coefficients are became smaller which is a positive indication.  
+
+The R^2 and adjusted R^2 statistics also increased to above 75%.  The p-value of the F-statistic remained highly significant.
+
+```{r fig.width=10, fig.height=10}
+old.par <- par(mfrow=c(2,2),ps=16)
+
+plot(my.model1)
+```
+
+Residuals vs Fitted: There is a relatively even spread of the data in both dimensions with a relatively flat and straight fit line.  There are some outliers in the upper right quadrant.
+
+Normal Q-Q Plot: The line's left tail effects are now gone and it's very straight.  It's right tail effects are noticeable but improved.  
+
+Scale-Location Plot: The spread of the data is both axis is relatively even and the fit line is flat and straight.  There is some data sparsity in the left half but it is still an improvement.  There are some outliers in the upper right quadrant.
+
+Residuals vs Leverage:  The points are so far from Cook's distance that the 0.5 Cook's distance line does not appear on the graph which is a positive sign.  
+
+```{r}
+#shorten the name of our final modified data set
+my.data <- log.outcome.transformed.data.remove.outliers
+```
+
+```{r}
+#99% confidence intervals for model parameters that are statistically 
+#significant (note all are significant after the two outliers were removed)
+CI <- confint(my.model1, level = .99)
+CI
+```
+
+Intercept: The 99% confidence interval for the intercept is always negative.
+
+logDate: The 99% confidence interval for the log of Date is always positive which indicates prices are rising over time which is the general rule for real estate values.
+
+HouseAge: The 99% confidence interval for house age is always negative which incidate that the older the home is the less its value per ping.
+
+logDisttoMRT: The 99% confidence interval for the log of the distance to the MRT is always negative which indicates that the further from an MRT stop, the less the home's value per ping.
+
+Store: The 99% confidence interval for the number of Stores nearby is always postive which indicates that the more stores nearby, the larger the home value per ping.
+
+logLat: The 99% confidence inteval for the log of Latitude is always positive which indicates that the further North the home is, the more value it has per ping.    
+
+logLong: The 99% confidence interval for the log of Longitude is always positive positive.  This indicates that the further east, the larger the home value per ping.
+
+```{r}
+#raw data with outliers removed
+raw.data.no.outliers <- raw.data[-c(114,271),]
+
+```
+
+
+```{r}
+#new data to predict from where each predictor is set to the average of its 
+#range of values
+new.data <- data.frame(
+    logDate=c(log(mean(raw.data.no.outliers$Date)+1)),
+    HouseAge=c(mean(raw.data.no.outliers$HouseAge)),
+    logDisttoMRT=c(log(mean(raw.data.no.outliers$DisttoMRT)+1)),
+    Stores=c(mean(raw.data.no.outliers$Stores)),
+    logLat=c(log(mean(raw.data.no.outliers$Lat)+1)),
+    logLong=c(log(mean(raw.data.no.outliers$Long)+1)))
+new.data
+```
+
+
+```{r}
+#prediction based on new data with 90% confidence interval.  The predict 
+#function was raised to the e and then 1 was subtracted to untransform the value
+
+exp(predict(my.model1, newdata=new.data , interval = 'confidence',
+            level = 0.9))-1
+```
+
+The predicted mean value is 321,609.20 NTD with a confidence interval of this value between 315,202.80 NTD and 328,141.8 NTD.
+
+```{r}
+vif(my.model1)
+```
+
+All variance inflation factors are below 5 therefore there is no significant multicollinearity in the model.  Also the standard errors relative to their respective coefficients are acceptable.  All coefficients have signs that can be explained by theory and general knowledge of real estate.  
+
+In the initial pair plots there was high correlation between longitude and the distance to the MRT station.  Let's explore that.
+
+```{r}
+my.model2 <- lm(logPricePerPing~logDate+HouseAge+logDisttoMRT+Stores+logLat,
+                my.data)
+model.summary2 <- summary(my.model2)
+my.model2
+model.summary2
+vif(my.model2)
+
+```
+
+```{r}
+my.model3 <- lm(logPricePerPing~logDate+HouseAge+Stores+logLat+logLong,my.data)
+model.summary3 <- summary(my.model3)
+my.model3
+model.summary3
+vif(my.model3)
+```
+
+Note that the coefficients did not change significantly between the model with all predictors and those with logLong or logDisttoMRT removed.  Again, there is no evidence of collinearity.
+
+```{r}
+head(my.data)
+```
+
+```{r}
+absolute.correlation.values <- abs(cor(my.data$logPricePerPing,my.data))
+absolute.correlation.values
+
+#Ordering the final dataset by it's absolute correlation value
+colorder <- order(absolute.correlation.values,decreasing = TRUE)
+
+my.data <- my.data[,colorder]
+head(my.data)
+```
+
+
+```{r}
+error.plot <- NULL
+for ( k in 2:ncol(my.data) ) {
+  temp.model <- lm(logPricePerPing~ .,my.data[,1:k] )
+  temp.error <- sqrt(mean((my.data[,"logPricePerPing"]-predict(temp.model))^2))
+  error.plot <- rbind(error.plot,data.frame(nvars=k-1,err=temp.error))
+}
+plot(error.plot,xlab="Number of variables",ylab="Regression error",main=paste(nrow(my.data),"observations"),ylim=c(min(error.plot[,"err"]),
+                                                                                                                   sqrt(mean((my.data[,"logPricePerPing"]-
+                                                                                                                                  mean(my.data[,"logPricePerPing"]))^2))))
+abline(h=sqrt(mean((my.data[,"logPricePerPing"]-
+                        mean(my.data[,"logPricePerPing"]))^2)),lty=2)
+```
+
+No significant plateauing is occuring in the above plot therefore we still do not have evidence indicating collinearity or overfitting.
+
+
+# Sub-problem 3: choose optimal models by exhaustive, forward and backward selection (20 points)
+
+*Use `regsubsets` from library `leaps` to choose optimal set of variables for modeling real estate valuation and describe differences and similarities between attributes deemed most important by these approaches.*
+
+```{r}
+#run regsubsets optimization to identify the optimal model using exhaustive, 
+#backward and forward methods.
+summaryMetrics1 <- NULL
+
+whichAll1 <- list()
+
+for ( myMthd in c("exhaustive", "backward", "forward") ) {
+  
+  rsRes1 <- regsubsets(logPricePerPing~.,my.data,method=myMthd,nvmax = 6)
+  
+  summRes1 <- summary(rsRes1)
+  
+  whichAll1[[myMthd]] <- summRes1$which
+  
+  for ( metricName in c("rsq","rss","adjr2","cp","bic") ) {
+    
+    summaryMetrics1 <- rbind(summaryMetrics1,
+                             data.frame(method=myMthd,metric=metricName,
+                                        nvars=1:length(summRes1[[metricName]]),
+                                        value=summRes1[[metricName]])
+                             )
+  }
+}
+
+ggplot(summaryMetrics1,aes(x=nvars,y=value,shape=method,colour=method)) + 
+  geom_path() + 
+  geom_point() + 
+  facet_wrap(~metric,scales="free") +
+  theme(legend.position="top")+theme_bw()
+```
+
+The plots above are not showing significant plateauing on any metric.  Their maxes (for R^2, RSS and adj R^2) and mins (Cp and BIC) all occur at the sixth term.  This indicates all terms add value to the model.  There are no difference between the methods.
+
+
+```{r}
+#Plot variables to see how often they are selected as the optimal mode in order
+#to establish a rank order of importance by method
+old.par <- par(mfrow=c(2,2),ps=8,mar=c(5,7,2,1))
+
+for ( myMthd in names(whichAll1) ) {
+  
+  image(1:nrow(whichAll1[[myMthd]]),
+        1:ncol(whichAll1[[myMthd]]),
+        whichAll1[[myMthd]],
+        xlab="N(vars)",
+        ylab="",
+        xaxt="n",
+        yaxt="n",
+        breaks=c(-0.5,0.5,1.5),
+        col=c("white","gray"),
+        main=myMthd
+        )
+  
+  axis(1,1:nrow(whichAll1[[myMthd]]),rownames(whichAll1[[myMthd]]))
+  
+  axis(2,1:ncol(whichAll1[[myMthd]]),colnames(whichAll1[[myMthd]]),las=2)
+}
+
+par(old.par)
+```
+
+All models agree that the ranked order of importance is:
+
+1) logDisttoMRT
+2) logLat
+3) HouseAge
+4) logDate
+5) logLong
+6) Stores
+
+
+
+```{r}
+#enter prediction function from homework 5
+predict.regsubsets <- function (object, newdata, id, ...){
+  form=as.formula(object$call [[2]])
+  mat=model.matrix(form,newdata)
+  coefi=coef(object,id=id)
+  xvars=names (coefi)
+  mat[,xvars] %*% coefi
+}
+```
+
+```{r}
+#evaluate tested and trained model effectiveness by splitting the model
+#multiple times (30)
+dfTmp1 <- NULL
+
+whichSum1 <- array(0,
+                   dim=c(6,7,3),
+                   dimnames=list(NULL,
+                                  colnames(model.matrix(logPricePerPing~.,my.data)),
+                                  c("exhaustive", 
+                                    "backward", 
+                                    "forward"))
+                   )
+
+# Split data into training and test 30 times:
+nTries1 <- 30
+
+for ( iTry in 1:nTries1 ) {
+  
+  bTrain1 <- sample(rep(c(TRUE,FALSE),
+                        length.out=nrow(my.data))
+                    )
+  
+  # Try each method available in regsubsets
+  # to select the best model of each size:
+  for ( jSelect in c("exhaustive", "backward", "forward") ) {
+    
+    rsTrain1 <- regsubsets(logPricePerPing~.,my.data[bTrain1,],
+                           nvmax=6,
+                           method=jSelect)
+    
+    # Add up variable selections:
+    whichSum1[,,jSelect] <- whichSum1[,,jSelect] + summary(rsTrain1)$which
+    
+    # Calculate test error for each set of variables
+    # using predict.regsubsets implemented above:
+    for ( kVarSet in 1:6 ) {
+      
+      # make predictions:
+      testPred1 <- predict(rsTrain1,my.data[!bTrain1,],id=kVarSet)
+      
+      # calculate MSE:
+      mseTest1 <- mean((testPred1-my.data[!bTrain1,"logPricePerPing"])^2)
+      
+      # add to data.frame for future plotting:
+      dfTmp1 <- rbind(dfTmp1,
+                      data.frame(sim=iTry,
+                                 sel=jSelect,
+                                 vars=kVarSet,
+                                 mse1=c(mseTest1,                             
+                                       summary(rsTrain1)$rss[kVarSet]/
+                                         sum(bTrain1)
+                                       ),
+                                 trainTest=c("test","train")
+                                )
+                      )
+    }
+  }
+}
+
+# plot MSEs by training/test, number of 
+# variables and selection method:
+ggplot(dfTmp1,aes(x=factor(vars),y=mse1,colour=sel)) +
+  geom_boxplot()+ 
+  facet_wrap(~trainTest)+ 
+  theme_bw()
+```
+
+Again, there is still value in adding all 6 terms as shown by the decreasing MSE in both the test and train data sets above.  Note there is no difference between exhaustive, backward, and forward selection.  
+
+The resampling method agrees with the same linear model and the exhaustive, backward, and forward methods found in the regsubsets method.
+
+
+```{r}
+#evaulate the mean MSE for all test data with a model size of 6 by method
+mean.mse.e <- with(dfTmp1, 
+                   mean(mse1[vars == 6 & 
+                             trainTest == 'test' & 
+                             sel == "exhaustive"]))
+cat("exhaustive:",mean.mse.e)
+
+mean.mse.b <- with(dfTmp1, 
+                   mean(mse1[vars == 6 & 
+                             trainTest == 'test' & 
+                             sel == "backward"]))
+cat("\nbackward:",mean.mse.b)
+
+mean.mse.f <- with(dfTmp1, 
+                   mean(mse1[vars == 6 & 
+                             trainTest == 'test' & 
+                             sel == "forward"]))
+cat("\nforward:",mean.mse.f)
+
+```
+
+All three methods produce identical results of the MSE.  
+
+# Sub-problem 4: optimal model by resampling (20 points)
+
+*Use cross-validation or any other resampling strategy of your choice to estimate test error for models with different numbers of variables.  Compare and comment on the number of variables deemed optimal by resampling versus those selected by `regsubsets` in the previous task.*
+
+
+```{r}
+#enter the bootstrap function from homework 5
+bootTrainTestErrOneAllVar <- function(inpDat,nBoot=100) {
+  # matrices and vector to store bootstrap training
+  # and test errors as well as training error for model
+  # fit on all observations -- for one through all
+  # variables in the dataset:
+  errTrain <- matrix(NA,nrow=nBoot,ncol=ncol(inpDat)-1)
+  errTest <- matrix(NA,nrow=nBoot,ncol=ncol(inpDat)-1)
+  allTrainErr <- numeric()
+  # first predictor is the second column in
+  # the input data - first is the outcome "Y":
+  for ( iTmp in 2:ncol(inpDat) ) {
+    # fit model and calculate error on all observations:
+    lmTmp <- lm(logPricePerPing~.,inpDat[,1:iTmp])
+    # summary(lmTmp)$sigma for degrees of freedom correction
+    allTrainErr[iTmp-1] <- sqrt(mean((inpDat[,"logPricePerPing"]-
+                                          predict(lmTmp))^2))
+    # draw repeated boostraps of the data:
+    for ( iBoot in 1:nBoot ) {
+      # replace=TRUE is critical for bootstrap to work correctly:
+      tmpBootIdx <- sample(nrow(inpDat),nrow(inpDat),replace=TRUE)
+      # model fit on the bootstrap sample and
+      # corresponding training error:
+      lmTmpBoot <- lm(logPricePerPing~.,inpDat[tmpBootIdx,1:iTmp])
+      # summary(lmTmpBoot)$sigma for degrees of freedom correction
+      errTrain[iBoot,iTmp-1] <- sqrt(mean((inpDat[tmpBootIdx,"logPricePerPing"]-predict(lmTmpBoot))^2))
+      # test error is calculated on the observations
+      # =not= in the bootstrap sample - thus "-tmpBootIdx"
+      errTest[iBoot,iTmp-1] <- sqrt(mean((inpDat[-tmpBootIdx,"logPricePerPing"]-
+                                              predict(lmTmpBoot,newdata=inpDat[-tmpBootIdx,1:iTmp]))^2))
+    }
+  }
+  # return results as different slots in the list:
+  list(bootTrain=errTrain,bootTest=errTest,allTrain=allTrainErr)
+}
+```
+
+```{r}
+#bootstrap the data
+bootrealestate <- bootTrainTestErrOneAllVar(my.data,50)
+```
+
+```{r}
+#plot the bootstrap results
+plotBootRegrErrR <- function(inpRes,inpPchClr=c(1,2,4),...) {
+  matplot(1:length(inpRes$allTrain),
+          cbind(inpRes$allTrain,
+                colMeans(inpRes$bootTrain),
+                colMeans(inpRes$bootTest)),
+          pch=inpPchClr,
+          col=inpPchClr,
+          lty=1,
+          type="b",
+          xlab="Number of predictors",
+          ylab="Regression error",...)
+  legend("top",
+         c("train all","train boot","test boot"),
+         col=inpPchClr,
+         text.col=inpPchClr,
+         pch=inpPchClr,
+         lty=1)
+}
+
+plotBootRegrErrR(bootrealestate,main="Regression Error over Increased 
+                 Observations")
+abline(h=sqrt(mean((mean(my.data[,"logPricePerPing"])-
+                        my.data[,"logPricePerPing"])^2)),lty=2)
+```
+
+```{r}
+#training error values
+print("Training Errors Averaged Over all Bootstraps:")
+cat("\n1 predictor:", mean(bootrealestate$bootTrain[,1]))
+cat("\n2 predictors:", mean(bootrealestate$bootTrain[,2]))
+cat("\n3 predictors:", mean(bootrealestate$bootTrain[,3]))
+cat("\n4 predictors:", mean(bootrealestate$bootTrain[,4]))
+cat("\n5 predictors:", mean(bootrealestate$bootTrain[,5]))
+cat("\n6 predictors:", mean(bootrealestate$bootTrain[,6]))
+```
+
+```{r}
+#test error values
+print("Test Errors Averaged Over all Bootstraps:")
+cat("\n1 predictor:", mean(bootrealestate$bootTest[,1]))
+cat("\n2 predictors:", mean(bootrealestate$bootTest[,2]))
+cat("\n3 predictors:", mean(bootrealestate$bootTest[,3]))
+cat("\n4 predictors:", mean(bootrealestate$bootTest[,4]))
+cat("\n5 predictors:", mean(bootrealestate$bootTest[,5]))
+cat("\n6 predictors:", mean(bootrealestate$bootTest[,6]))
+```
+
+```{r}
+#all training error values
+print("All Data Used for Training Error Values:")
+cat("\n1 predictor:", bootrealestate$allTrain[1])
+cat("\n2 predictors:", bootrealestate$allTrain[2])
+cat("\n3 predictors:", bootrealestate$allTrain[3])
+cat("\n4 predictors:", bootrealestate$allTrain[4])
+cat("\n5 predictors:", bootrealestate$allTrain[5])
+cat("\n6 predictors:", bootrealestate$allTrain[6])
+```
+
+
+Here we see that test and training error track each other nicely.  The test error line does not deviate from the training error therefore overfitting and multicollinearity does not appear to be concern.  The model with the lowest regression error is still the model with all 6 predictors on both the test and train boot straps.  This agrees with the analysis done with all 3 regsubset methods.
+
+
+# Sub-problem 5: variable selection by lasso (15 points)
+
+*Use regularized approach (i.e. lasso) to model property valuation.  Compare resulting models (in terms of number of variables and their effects) to those selected in the previous two tasks (by `regsubsets` and resampling), comment on differences and similarities among them.*
+
+```{r}
+# -1 to get rid of intercept that glmnet knows to include:
+x1 <- model.matrix(logPricePerPing~.,my.data)[,-1]
+
+y1 <- my.data[,"logPricePerPing"]
+```
+
+```{r}
+lassoRes1 <- glmnet(x1,y1,alpha=1)
+plot(lassoRes1, label=TRUE)
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1)
+plot(cvLassoRes1)
+```
+
+The lasso method shows very little change in MSE whether the lambda value is 1SE or the minimum value.  Note both of these models use all 6 variables.
+
+```{r}
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+Note that the minimum value lasso regression coefficients are very similar to the linear model that was selected in question 2.  The size of logDate and Stores coefficients differ significantly between the minimum value lasso regression and the 1SE lasso regression.  Because there is little evidence of overfitting and multicollinearity, using the 1SE method is not necessary to safegaurd against overfitting. 
+
+The signs of the variables stayed consisent between the model selected in problem 2 and both lasso models.  This indicates that the effects of each variable are consisent in their directions.  
+
+The lasso with lambda minimum method agrees with both the quantity of variables and the list of variables selected in the resampling analysis done in question 4, and all methods of regsubsets as shown in question 3.  The optimal model has all 6 predictor variables with coeffients matching the lasso with lambda minimum method.  The coefficients's signs match between all methods as well indicating the direction of the correlation is stable.
+
+
+# Extra points problem: using higher order terms (10 points)
+
+*Evaluate the impact of adding non-linear terms to the model.  Describe which terms, if any, warrant addition to the model and what is the evidence supporting their inclusion.  Evaluate, present and discuss the effect of their incorporation on model coefficients and test error estimated by resampling.*

@@ -1,0 +1,481 @@
+---
+title: 'CSCI E-63C: Final Exam/Project'
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Load Libraries and Preprocess Data
+
+```{r}
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(MASS)
+library(glmnet)
+library(randomForest)
+library(reshape2)
+library(e1071)
+
+# function to analyze the success rate by category
+success.rate.by.level <- function(column){
+    lvls <- levels(column)
+    total <- length(column)
+    counts <- numeric()
+    rates <- numeric()
+    Ycounts <- numeric()
+    Yrates <- numeric()
+    i <- 1
+    for (l in 1:length(lvls)){
+        counts[i] <- nrow(raw.data[column == lvls[l],])
+        rates[i] <- 100 * (counts[i] / total)
+        Ycounts[i] <- nrow(raw.data[column == lvls[l] & raw.data$response == "Y",])
+        Yrates[i] <- 100 * (Ycounts[i] / counts[i])
+        i <- i + 1
+    }
+    result <- as.data.frame(cbind(counts, rates, Ycounts, Yrates))
+    result <- cbind(lvls, result)
+    result <- result[order(Yrates),]
+    result[,1] <- factor(result[,1], levels = result[,1])
+    return(result)
+}
+
+# read in the raw training data
+raw.data <- read.csv("final-data-train.csv")
+
+# make the id column the row names and remove it as a variable
+pp.data.1 <- raw.data
+rownames(pp.data.1) <- pp.data.1$id
+pp.data.1$id <- NULL
+
+# remove non-relevant variables
+pp.data.1$ent <- NULL
+pp.data.1$ox <- NULL
+pp.data.1$bnf <- NULL
+
+# wc: combine a/c/f; combine b/e; make 3 levels
+pp.data.1$wc <- as.character(pp.data.1$wc)
+pp.data.1$wc[pp.data.1$wc == "a" | pp.data.1$wc == "c" | pp.data.1$wc == "f"] <- "acf"
+pp.data.1$wc[pp.data.1$wc != "acf" & pp.data.1$wc != "d"] <- "be"
+pp.data.1$wc <- as.factor(pp.data.1$wc)
+
+# zwp: combine S/R; combine T/O/U/N; combine V/X/W/Q/Y/P/Z; make 3 levels
+pp.data.1$zwp <- as.character(pp.data.1$zwp)
+pp.data.1$zwp[pp.data.1$zwp == "S" | pp.data.1$zwp == "R"] <- "SR"
+pp.data.1$zwp[pp.data.1$zwp == "T" | pp.data.1$zwp == "O" | pp.data.1$zwp == "U" | pp.data.1$zwp == "N"] <- "TOUN"
+pp.data.1$zwp[pp.data.1$zwp != "SR" & pp.data.1$zwp != "TOUN"] <- "VXWQYPZ"
+pp.data.1$zwp <- as.factor(pp.data.1$zwp)
+
+# ypz: combine 1/4/11/0/6/14/7; combine 3/12/10; combine 15/19/16; combine 17/13/5/8/2; make 4 levels
+pp.data.1$ypz <- as.character(pp.data.1$ypz)
+pp.data.1$ypz[pp.data.1$ypz == "3" | pp.data.1$ypz == "12"| pp.data.1$ypz == "10"] <- "3,12,10"
+pp.data.1$ypz[pp.data.1$ypz == "15" | pp.data.1$ypz == "19"| pp.data.1$ypz == "16"] <- "15,19,16"
+pp.data.1$ypz[pp.data.1$ypz == "17" | pp.data.1$ypz == "13"| pp.data.1$ypz == "5" | pp.data.1$ypz == "8"| pp.data.1$ypz == "2"] <- "17,13,5,8,2"
+pp.data.1$ypz[pp.data.1$ypz != "3,12,10" & pp.data.1$ypz != "3,12,10" & pp.data.1$ypz != "17,13,5,8,2"] <- "1,4,11,0,6,14,7"
+pp.data.1$ypz <- as.factor(pp.data.1$ypz)
+
+#combine sb into s2/s5 and not s2/s5
+pp.data.1$sb <- as.character(pp.data.1$sb)
+pp.data.1$sb[(pp.data.1$sb == "s2") | (pp.data.1$sb == "s5")] <- "s2s5"
+pp.data.1$sb[pp.data.1$sb != "s2s5"] <- "s1s3s4s6s7s8"
+pp.data.1$sb <- as.factor(pp.data.1$sb)
+
+# xt: combine dgk/ntb/fcc; combine mrm/gcn; make 2 levels
+pp.data.1$xt <- as.character(pp.data.1$xt)
+pp.data.1$xt[(pp.data.1$xt == "mrm") | (pp.data.1$xt == "gcn")] <- "mrm,gcn"
+pp.data.1$xt[pp.data.1$xt != "mrm,gcn"] <- "dgk,ntb,fcc"
+pp.data.1$xt <- as.factor(pp.data.1$xt)
+
+# ku: create ordered factors to treat ku as continuous
+rates.ku <- success.rate.by.level(raw.data$ku)
+pp.data.1$ku <- factor(pp.data.1$ku, levels = rates.ku[,1])
+pp.data.1$ku <- as.numeric(pp.data.1$ku)
+
+#rearrange to continuous and discrete
+continuous.vec <- c("response", "dtj", "qh", "sci", "bw", "ku", "is")
+discrete.list <- list(
+    "wc",
+    "zwp",
+    "wi",
+    "ypz",
+    "tdt",
+    "sb",
+    "xt",
+    "np"
+)
+discrete.vec <- c("response", unlist(discrete.list, use.names = FALSE))
+colorder <- c(continuous.vec, discrete.vec[2:length(discrete.vec)])
+pp.data.1 <- pp.data.1[,colorder]
+
+#subset data for testing models
+sampled.rows <- sample(seq(1, nrow(pp.data.1)),ceiling(0.2*nrow(pp.data.1)),replace = FALSE)
+model.test.data <- pp.data.1[sampled.rows,]
+
+#subset data for testing code
+xs.sampled.rows <- sample(seq(1, nrow(pp.data.1)),ceiling(1/31*nrow(pp.data.1)),replace = FALSE)
+xs.model.test.data <- pp.data.1[xs.sampled.rows,]
+
+#dropped variables from variable selection analysis
+select.data <- pp.data.1
+select.data$sci <- NULL
+select.data$bw <- NULL
+select.data$ypz <- NULL
+head(select.data)
+```
+
+```{r}
+# csv's for previous model performance:
+logistic.performance.2 <- read.csv("logistic_performance.csv")
+lda.performance.2 <- read.csv("lda_performance.csv")
+rf.performance.2 <- read.csv("rf_performance.csv")
+compare.table2.2 <- read.csv("compare_err_table.csv")
+```
+
+# Problem 5: SVM (20 points)
+
+Develop SVM model of categorical outcome `response` deciding on the choice of kernel, cost, etc. that appear to yield better performance.  Test model performance on multiple splits of data into training and test subsets, summarize model performance in terms of accuracy/error/sensitivity/specificity and compare to the performance of the rest of the models developed above (logistic regression, LDA, random forest).
+
+```{r}
+svmfit <- svm(response~., data=select.data, kernel="linear", cost=.1, scale = TRUE)
+svm.err.table <- table(predict(svmfit), select.data$response)
+svm.err.table
+error.rate <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+error.rate
+
+svmfit <- svm(response~., data=select.data, kernel="linear", cost=1, scale = TRUE)
+svm.err.table <- table(predict(svmfit), select.data$response)
+svm.err.table
+error.rate <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+error.rate
+
+svmfit <- svm(response~., data=select.data, kernel="linear", cost=10, scale = TRUE)
+svm.err.table <- table(predict(svmfit), select.data$response)
+svm.err.table
+error.rate <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+error.rate
+```
+
+```{r}
+svmfit <- svm(response~., data=select.data, kernel="linear", cost=.01, scale = TRUE)
+svm.err.table <- table(predict(svmfit), select.data$response)
+svm.err.table
+error.rate <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+error.rate
+```
+
+I picked cost=1 because it generated the same error rate as higher cost models but in less time and is therefore less expensive.  
+
+```{r}
+svmfit <- svm(response~., data=select.data, kernel="radial", cost=1, gamma=.1, 
+              scale = TRUE)
+svm.err.table <- table(predict(svmfit), select.data$response)
+svm.err.table
+error.rate <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+error.rate
+
+svmfit <- svm(response~., data=select.data, kernel="radial", cost=1, gamma=1,
+              scale = TRUE)
+svm.err.table <- table(predict(svmfit), select.data$response)
+svm.err.table
+error.rate <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+error.rate
+
+svmfit <- svm(response~., data=select.data, kernel="radial", cost=1, gamma=10,
+              scale = TRUE)
+svm.err.table <- table(predict(svmfit), select.data$response)
+svm.err.table
+error.rate <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+error.rate
+```
+
+The radial kernel has better results but looks more prone to overfitting.  I will choose the radial kernel with a model choice of the gamma value = 1.
+
+```{r}
+#set parameters
+iterations <- 10
+gamma <- 1
+cost <- 1
+kernel <- "radial"
+
+#create storage
+error.rate = numeric()
+accuracy = numeric()
+sensitivity = numeric()
+specificity = numeric()
+
+#train/test loop
+for (i in 1:iterations){
+  
+    #split into test/train
+    test.row.sample <- sample(seq(1,nrow(select.data)), 
+                              ceiling(.3 * nrow(select.data)), 
+                              replace = FALSE)
+    test.split <- select.data[test.row.sample,]
+    train.split <- select.data[-test.row.sample,]
+    
+    #fit and predict svm model
+    svmfit <- svm(response~., data=train.split, 
+                  kernel=kernel, 
+                  cost=cost, 
+                  gamma=gamma,
+                  scale = TRUE)
+    predicted <- predict(svmfit, test.split)
+    
+    #computing performance of the model
+    truth <- as.numeric(test.split$response) - 1
+    predicted.num <- as.numeric(predicted) - 1
+    svm.err.table <- table(predicted, test.split$response)
+    TP = sum(truth==1 & predicted.num==1)
+    TN = sum(truth==0 & predicted.num==0)
+    FP = sum(truth==0 & predicted.num==1)
+    FN = sum(truth==1 & predicted.num==0)
+    P = TP+FN 
+    N = FP+TN
+    error.rate[i] <- 100 * (1-sum(diag(svm.err.table))/sum(svm.err.table))
+    accuracy[i] <- 100 - error.rate[i]
+    sensitivity[i] <- signif(100*TP/P,3)
+    specificity[i] <- signif(100*TN/N,3)
+}
+
+# results
+svm.performance <- cbind(error.rate, accuracy, sensitivity, specificity)
+svm.performance.mean <- as.data.frame(apply(svm.performance, 2, mean))
+colnames(svm.performance.mean) <- paste0(iterations, "rep.svm.mean")
+```
+
+```{r}
+head(svm.performance)
+svm.performance.mean
+final.compare.table <- cbind(compare.table2.2[,2:ncol(compare.table2.2)], svm.performance.mean)
+final.compare.table
+```
+
+
+
+# Problem 6: predictions for test dataset  (10 points)
+
+## Problem 6a: compare logistic regression, LDA, random forest and SVM model performance (3 points)
+
+Compare performance of the models developed above (logistic regression, LDA, random forest, SVM) in terms of their accuracy, error and sensitivity/specificity.  Comment on differences and similarities between them.
+
+```{r}
+colnames(final.compare.table) <- c("logistic","lda","rf","svm")
+final.compare.table
+```
+
+```{r}
+#split logistic regression performance data for plotting
+log.err <- cbind(rep("logistic",nrow(logistic.performance.2)),
+  logistic.performance.2[,1])
+log.acc <- cbind(rep("logistic",nrow(logistic.performance.2)),
+  logistic.performance.2[,2])
+log.sens <- cbind(rep("logistic",nrow(logistic.performance.2)),
+  logistic.performance.2[,3])
+log.spec <- cbind(rep("logistic",nrow(logistic.performance.2)),
+  logistic.performance.2[,4])
+
+#split lda regression performance data for plotting
+lda.err <- cbind(rep("lda",nrow(lda.performance.2)),
+  lda.performance.2[,1])
+lda.acc <- cbind(rep("lda",nrow(lda.performance.2)),
+  lda.performance.2[,2])
+lda.sens <- cbind(rep("lda",nrow(lda.performance.2)),
+  lda.performance.2[,3])
+lda.spec <- cbind(rep("lda",nrow(lda.performance.2)),
+  lda.performance.2[,4])
+
+#split rf regression performance data for plotting
+rf.err <- cbind(rep("rf",nrow(rf.performance.2)),
+  rf.performance.2[,1])
+rf.acc <- cbind(rep("rf",nrow(rf.performance.2)),
+  rf.performance.2[,2])
+rf.sens <- cbind(rep("rf",nrow(rf.performance.2)),
+  rf.performance.2[,3])
+rf.spec <- cbind(rep("rf",nrow(rf.performance.2)),
+  rf.performance.2[,4])
+
+#split svm regression performance data for plotting
+svm.err <- cbind(rep("svm",nrow(svm.performance)),
+  svm.performance[,1])
+svm.acc <- cbind(rep("svm",nrow(svm.performance)),
+  svm.performance[,2])
+svm.sens <- cbind(rep("svm",nrow(svm.performance)),
+  svm.performance[,3])
+svm.spec <- cbind(rep("svm",nrow(svm.performance)),
+  svm.performance[,4])
+
+#bind for plotting
+err <- as.data.frame(rbind(log.err, lda.err, rf.err, svm.err))
+colnames(err) <- c("model", "error")
+acc <- as.data.frame(rbind(log.acc, lda.acc, rf.acc, svm.acc))
+colnames(acc) <- c("model", "accuracy")
+sens <- as.data.frame(rbind(log.sens, lda.sens, rf.sens, svm.sens))
+colnames(sens) <- c("model", "sensitivity")
+spec <- as.data.frame(rbind(log.spec, lda.spec, rf.spec, svm.spec))
+colnames(spec) <- c("model", "specificity")
+```
+
+```{r fig.width=10, fig.height=5}
+#plot
+a <- ggplot(err, aes(x=model, y=as.numeric(as.character(error)))) +
+  geom_boxplot() +
+  ggtitle("Error Comparison by Model") +
+  ylab("Error %")
+
+b <- ggplot(acc, aes(x=model, y=as.numeric(as.character(accuracy)))) +
+  geom_boxplot() +
+  ggtitle("Accuracy Comparison by Model") +
+  ylab("Accuracy %")
+
+c <- ggplot(sens, aes(x=model, y=as.numeric(as.character(sensitivity)))) +
+  geom_boxplot() +
+  ggtitle("Sensitivity Comparison by Model") +
+  ylab("Sensitivity %")
+
+d <- ggplot(spec, aes(x=model, y=as.numeric(as.character(specificity)))) +
+  geom_boxplot() +
+  ggtitle("Specificity Comparison by Model") +
+  ylab("Specificity %")
+
+grid.arrange(a, b, c, d, ncol = 2)
+```
+
+Error/Accuracy: The random forest and svm models perform very similarly in terms of error and accuracy.  The svm model has a little bit wider quantile or ranges and is biased towards lower error rates.  The best performance of error rate that I achieved was using the svm model at an error rate of 10.9216% which only mean the mean error rate of the random forest by one thousandth of one percent.  LDA was the least effective with an error rate above 12%; followed by logistic regression at just below 12%.  
+
+Sensitvity: The random forest mdel was the most sensitive at 74.41%; followed closely by svm at about 1/2 of a percent lower.  Logistic and and LDA performed relatively poorly in this category with logistic in the mid 60%'s and lda 11% above a random coin flip.
+
+Specificity: The lda model was the most specific at 96.1428%.  This was followed closely by the logistic model less than 1/2 a percent lower.  The random forest performed the worst in this category at 93.88% but very close to svm at 94.02%.
+
+Generally, LDA has wider quantiles than the other models and the random forest has the tightest.  This indicates that random forest is more consistent in its predictions.  
+
+Given that his final exam is indicating lowest error and highest accuracy, I choose the random forest because of its high accuracy, low error and tight and stable quantiles across all four metrics.  As an added bonus it also has the highest sensitivity which could be beneficial considering in the training data there were much fewer Y's than N's.  Discerning the fewer Y's can add value to the model.  
+
+```{r}
+final.compare.table
+```
+
+
+## Problem 6b: make predictions for the **test** dataset (3 points)
+
+Decide on the model that performs the best and use it to make predictions for the **test** dataset.  This is the dataset that is provided separately from training data without the outcome `response` that we are modeling here.  Upload resulting predictions in comma-separated values (CSV) format into the Canvas website.  Please check sample files with test dataset predictions for the expected format of the *.csv file with predictions: your submission must be in precisely the same format -- two and only two columns, first column - ids of the test observations ("id" column in test dataset), second - predictions as Y/N calls (not 0/1, 1/2, true/false, etc.).  The name of the second column of predictions is what will be used in leaderboard as its name.
+
+```{r}
+# function to analyze the success rate by category
+success.rate.by.level <- function(column){
+    lvls <- levels(column)
+    total <- length(column)
+    counts <- numeric()
+    rates <- numeric()
+    Ycounts <- numeric()
+    Yrates <- numeric()
+    i <- 1
+    for (l in 1:length(lvls)){
+        counts[i] <- nrow(final.test.data[column == lvls[l],])
+        rates[i] <- 100 * (counts[i] / total)
+        Ycounts[i] <- nrow(final.test.data[column == lvls[l] & final.test.data$response == "Y",])
+        Yrates[i] <- 100 * (Ycounts[i] / counts[i])
+        i <- i + 1
+    }
+    result <- as.data.frame(cbind(counts, rates, Ycounts, Yrates))
+    result <- cbind(lvls, result)
+    result <- result[order(Yrates),]
+    result[,1] <- factor(result[,1], levels = result[,1])
+    return(result)
+}
+
+#load raw data
+final.test.data <- read.csv("final-data-test.csv")
+
+# make the id column the row names and remove it as a variable
+pp.data.1 <- final.test.data
+rownames(pp.data.1) <- pp.data.1$id
+pp.data.1$id <- NULL
+
+# remove non-relevant variables
+pp.data.1$ent <- NULL
+pp.data.1$ox <- NULL
+pp.data.1$bnf <- NULL
+
+# wc: combine a/c/f; combine b/e; make 3 levels
+pp.data.1$wc <- as.character(pp.data.1$wc)
+pp.data.1$wc[pp.data.1$wc == "a" | pp.data.1$wc == "c" | pp.data.1$wc == "f"] <- "acf"
+pp.data.1$wc[pp.data.1$wc != "acf" & pp.data.1$wc != "d"] <- "be"
+pp.data.1$wc <- as.factor(pp.data.1$wc)
+
+# zwp: combine S/R; combine T/O/U/N; combine V/X/W/Q/Y/P/Z; make 3 levels
+pp.data.1$zwp <- as.character(pp.data.1$zwp)
+pp.data.1$zwp[pp.data.1$zwp == "S" | pp.data.1$zwp == "R"] <- "SR"
+pp.data.1$zwp[pp.data.1$zwp == "T" | pp.data.1$zwp == "O" | pp.data.1$zwp == "U" | pp.data.1$zwp == "N"] <- "TOUN"
+pp.data.1$zwp[pp.data.1$zwp != "SR" & pp.data.1$zwp != "TOUN"] <- "VXWQYPZ"
+pp.data.1$zwp <- as.factor(pp.data.1$zwp)
+
+# ypz: combine 1/4/11/0/6/14/7; combine 3/12/10; combine 15/19/16; combine 17/13/5/8/2; make 4 levels
+pp.data.1$ypz <- as.character(pp.data.1$ypz)
+pp.data.1$ypz[pp.data.1$ypz == "3" | pp.data.1$ypz == "12"| pp.data.1$ypz == "10"] <- "3,12,10"
+pp.data.1$ypz[pp.data.1$ypz == "15" | pp.data.1$ypz == "19"| pp.data.1$ypz == "16"] <- "15,19,16"
+pp.data.1$ypz[pp.data.1$ypz == "17" | pp.data.1$ypz == "13"| pp.data.1$ypz == "5" | pp.data.1$ypz == "8"| pp.data.1$ypz == "2"] <- "17,13,5,8,2"
+pp.data.1$ypz[pp.data.1$ypz != "3,12,10" & pp.data.1$ypz != "3,12,10" & pp.data.1$ypz != "17,13,5,8,2"] <- "1,4,11,0,6,14,7"
+pp.data.1$ypz <- as.factor(pp.data.1$ypz)
+
+#combine sb into s2/s5 and not s2/s5
+pp.data.1$sb <- as.character(pp.data.1$sb)
+pp.data.1$sb[(pp.data.1$sb == "s2") | (pp.data.1$sb == "s5")] <- "s2s5"
+pp.data.1$sb[pp.data.1$sb != "s2s5"] <- "s1s3s4s6s7s8"
+pp.data.1$sb <- as.factor(pp.data.1$sb)
+
+# xt: combine dgk/ntb/fcc; combine mrm/gcn; make 2 levels
+pp.data.1$xt <- as.character(pp.data.1$xt)
+pp.data.1$xt[(pp.data.1$xt == "mrm") | (pp.data.1$xt == "gcn")] <- "mrm,gcn"
+pp.data.1$xt[pp.data.1$xt != "mrm,gcn"] <- "dgk,ntb,fcc"
+pp.data.1$xt <- as.factor(pp.data.1$xt)
+
+# ku: create ordered factors to treat ku as continuous
+rates.ku <- success.rate.by.level(final.test.data$ku)
+pp.data.1$ku <- factor(pp.data.1$ku, levels = rates.ku[,1])
+pp.data.1$ku <- as.numeric(pp.data.1$ku)
+
+#rearrange to continuous and discrete
+continuous.vec <- c("dtj", "qh", "sci", "bw", "ku", "is")
+discrete.list <- list(
+    "wc",
+    "zwp",
+    "wi",
+    "ypz",
+    "tdt",
+    "sb",
+    "xt",
+    "np"
+)
+discrete.vec <- unlist(discrete.list, use.names = FALSE)
+colorder <- c(continuous.vec, discrete.vec)
+pp.data.1 <- pp.data.1[,colorder]
+
+#dropped variables from variable selection analysis
+select.test.data <- pp.data.1
+select.test.data$sci <- NULL
+select.test.data$bw <- NULL
+select.test.data$ypz <- NULL
+head(select.test.data)
+```
+
+```{r}
+rfRes <- randomForest(select.data[,2:ncol(select.data)],
+                      select.data$response,
+                      mtry = 5, ntree = 1000)
+final.prediction <- predict(rfRes, newdata=select.test.data)
+head(final.prediction)
+```
+
+```{r}
+write.csv(final.prediction, "final_prediction_knapp_stephen.csv")
+```
+
+
+## Problem 6c: get better than coin flip by 10% (4 points)
+
+This is not really a problem *per se* but rather a criterion that we will go by when assessing quality of your predictions for the test dataset.  You get these four points if your predictions for **test** dataset are better than those obtained from a fair coin flip (already shown in leaderboard and as examples of the file format for predictions upload) by at least 10% on **all** four metrics shown in the leaderboard (accuracy, sensitivity, specificity and precision).  But then predictions by the coin flip should not be very difficult to improve upon.  

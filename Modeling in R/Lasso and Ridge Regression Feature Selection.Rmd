@@ -1,0 +1,635 @@
+---
+title: 'CSCI E-63C: Week 5 Problem Set'
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+library(ISLR)
+library(leaps)
+library(ggplot2)
+library(glmnet)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Preface
+
+For this problem set we will apply some of the approaches presented in ISLR for variable selection and model regularization to some of those datasets that we have worked with previously.  The goal will be to see whether some of the more principled methods for model selection will allow us better understand relative variable importance, variability of predictive performance of the models, etc.
+
+For the purposes of the preface we will use algae dataset that we used in the lecture to illustrate some of the concepts and approaches here.  To do something different here in preface we will be modeling another outcome available there -- AG2.  The problems in the set will continue using fund raising dataset from the previous problem sets.  The flow below follows closely the outline of the Labs 6.5 and 6.6 in ISLR and you are encouraged to refer to them for additional examples and details.
+
+
+```{r algaeDataInput}
+algaeRaw <- read.table ("coil.analysis.data.txt", header=F, sep =",", row.names =NULL, na.strings ="XXXXXXX")
+colnames (algaeRaw)= c("season","size","velocity",paste0("C",1:8),paste0("AG",1:7))
+algaeRaw[1:3,]
+# remove cases with undefined values and three outliers:
+algae <- na.omit(algaeRaw)
+algae <- algae[
+  algae[,"C4"]<max(algae[,"C4"],na.rm=TRUE)
+  &algae[,"C3"]<max(algae[,"C3"],na.rm=TRUE)
+  &algae[,"AG4"]<max(algae[,"AG4"],na.rm=TRUE),
+  ]
+# log-transform selected attributes:
+for ( iCol in 1:8 ) {
+  if ( iCol > 2 ) {
+    algae[,paste0("C",iCol)] <- log(algae[,paste0("C",iCol)])
+  }
+  if ( iCol < 8 ) {
+    algae[,paste0("AG",iCol)] <- log(1+algae[,paste0("AG",iCol)])
+  }
+}
+# we'll use AG2 as an outcome here:
+algaeAG2 <- algae[,!colnames(algae)%in%paste0("AG",c(1,3:7))]
+head(algaeAG2)
+
+```
+
+```{r algaePairs,fig.width=12,fig.height=12}
+pairs(algaeAG2[,-(1:3)])
+```
+
+## Selecting the best variable subset on the entire dataset
+
+Assuming that we have read and pre-processed algae data (omitted observations with undefined values, log-transformed where necessary and removed egregious outliers), let's use `regsubsets` from library `leaps` to select optimal models with the number of terms ranging from one to all variables in the dataset using each of the methods available for this function and collect corresponding model metrics (please notice that we override default value of `nvmax` argument and reflect on as to why we do that and use that specific value -- remember that the goal here is to evaluate models up to those that include every predictor available):
+
+```{r regsubsetsAlgaeAG2,fig.width=9,fig.height=6}
+summaryMetrics <- NULL
+whichAll <- list()
+for ( myMthd in c("exhaustive", "backward", "forward", "seqrep") ) {
+  # 15 because three categorical attributes are represented by dummy variables:
+  rsRes <- regsubsets(AG2~.,algaeAG2,method=myMthd,nvmax=15)
+  summRes <- summary(rsRes)
+  whichAll[[myMthd]] <- summRes$which
+  for ( metricName in c("rsq","rss","adjr2","cp","bic") ) {
+    summaryMetrics <- rbind(summaryMetrics,
+      data.frame(method=myMthd,metric=metricName,
+                nvars=1:length(summRes[[metricName]]),
+                value=summRes[[metricName]]))
+  }
+}
+ggplot(summaryMetrics,aes(x=nvars,y=value,shape=method,colour=method)) + geom_path() + geom_point() + facet_wrap(~metric,scales="free") +   theme(legend.position="top")+theme_bw()
+```
+
+We can see that, except for sequential replacement that a couple of times selected models by far more inferior to those selected by the rest of the methods, and backward coming up also with models a couple of times slightly worse than the rest for corresponding attribute counts (`nvars=5:6`), all others came up with the models of very comparable performance by every associated metric.  Plotting variable membership for each of those models as captured by `which` attribute of the `summary` demonstrates that the first four variables are the same regardless of the method used to select them -- C8, C1, C3 and medium size, after which variable inclusion somewhat varies by the method used for variable selection:
+
+```{r algaeAG2which,fig.width=8,fig.height=8}
+old.par <- par(mfrow=c(2,2),ps=16,mar=c(5,7,2,1))
+for ( myMthd in names(whichAll) ) {
+  image(1:nrow(whichAll[[myMthd]]),
+        1:ncol(whichAll[[myMthd]]),
+        whichAll[[myMthd]],xlab="N(vars)",ylab="",
+        xaxt="n",yaxt="n",breaks=c(-0.5,0.5,1.5),
+        col=c("white","gray"),main=myMthd)
+  axis(1,1:nrow(whichAll[[myMthd]]),rownames(whichAll[[myMthd]]))
+  axis(2,1:ncol(whichAll[[myMthd]]),colnames(whichAll[[myMthd]]),las=2)
+}
+par(old.par)
+```
+
+## Using training and test data to select the best subset
+
+Next, following Lab 6.5.3 in ISLR we will split our data approximately evenly into training and test, select the best subset of variables on training data, evaluate its performance on training and test and record which variables have been selected each time.  First, to be able to use `regsubsets` output to make predictions we follow ISLR and setup `predict` function that can be applied to the output from `regsubsets` (notice `.regsubsets` in its name -- this is how under S3 OOP framework in R methods are matched to corresponding classes -- we will further down call it just by passing output from `regsubsets` to `predict` -- this, in its turn, works because *function* `regsubsets` returns object of *class* `regsubsets`):
+
+```{r predictRegsubsets}
+predict.regsubsets <- function (object, newdata, id, ...){
+  form=as.formula(object$call [[2]])
+  mat=model.matrix(form,newdata)
+  coefi=coef(object,id=id)
+  xvars=names (coefi)
+  mat[,xvars] %*% coefi
+}
+```
+
+We are all set now to repeatedly draw training sets, choose the best set of variables on them by each of the four different methods available in `regsubsets`, calculate test error on the remaining samples, etc.  To summarize variable selection over multiple splits of the data into training and test, we will use 3-dimensional array `whichSum` -- third dimension corresponding to the four methods available in `regsubsets`.  To split data into training and test we will use again `sample` function -- those who are curious and are paying attention may want to reflect on the difference in how it is done below and how it is implemented in the Ch. 6.5.3 of ISLR and what are the consequences of that. (Hint: consider how size of training or test datasets will vary from one iteration to another in these two implementations)
+
+```{r algaeAG2regsubsetsTrainTest,fig.width=12,fig.height=6}
+dfTmp <- NULL
+whichSum <- array(0,dim=c(15,16,4),
+  dimnames=list(NULL,colnames(model.matrix(AG2~.,algaeAG2)),
+      c("exhaustive", "backward", "forward", "seqrep")))
+# Split data into training and test 30 times:
+nTries <- 30
+for ( iTry in 1:nTries ) {
+  bTrain <- sample(rep(c(TRUE,FALSE),length.out=nrow(algaeAG2)))
+  # Try each method available in regsubsets
+  # to select the best model of each size:
+  for ( jSelect in c("exhaustive", "backward", "forward", "seqrep") ) {
+    rsTrain <- regsubsets(AG2~.,algaeAG2[bTrain,],nvmax=15,method=jSelect)
+    # Add up variable selections:
+    whichSum[,,jSelect] <- whichSum[,,jSelect] + summary(rsTrain)$which
+    # Calculate test error for each set of variables
+    # using predict.regsubsets implemented above:
+    for ( kVarSet in 1:15 ) {
+      # make predictions:
+      testPred <- predict(rsTrain,algaeAG2[!bTrain,],id=kVarSet)
+      # calculate MSE:
+      mseTest <- mean((testPred-algaeAG2[!bTrain,"AG2"])^2)
+      # add to data.frame for future plotting:
+      dfTmp <- rbind(dfTmp,data.frame(sim=iTry,sel=jSelect,vars=kVarSet,
+      mse=c(mseTest,summary(rsTrain)$rss[kVarSet]/sum(bTrain)),trainTest=c("test","train")))
+    }
+  }
+}
+# plot MSEs by training/test, number of 
+# variables and selection method:
+ggplot(dfTmp,aes(x=factor(vars),y=mse,colour=sel)) + geom_boxplot()+facet_wrap(~trainTest)+theme_bw()
+```
+
+We can see clear difference in the behavior of training and test error with the increase in the number of attributes added to the model.  The training error gradually decreases even if for the larger numbers of predictors included in the model the difference between median errors is small comparing to the variability of the error across multiple splits of the data into training and test.  Test error demonstrates obvious decrease upon addition of the second attribute to the model followed by steady increase with the inclusion of three or more attributes in the model.  Therefore we can conclude that models with three or more attributes are overfitting in this case.
+
+
+By plotting average fraction of each variable inclusion in the best model of every size by each of the four methods (darker shades of gray indicate closer to unity fraction of times given variable has been included in the best subset) we can see that the selection of C1 and C8 is farily consistent, while the selection of the rest of the attributes varies across model sizes and selection methods:
+
+```{r whichTrainTestAlgaeAG2,fig.width=8,fig.height=8}
+old.par <- par(mfrow=c(2,2),ps=16,mar=c(5,7,2,1))
+for ( myMthd in dimnames(whichSum)[[3]] ) {
+  tmpWhich <- whichSum[,,myMthd] / nTries
+  image(1:nrow(tmpWhich),1:ncol(tmpWhich),tmpWhich,
+        xlab="N(vars)",ylab="",xaxt="n",yaxt="n",main=myMthd,
+        breaks=c(-0.1,0.1,0.25,0.5,0.75,0.9,1.1),
+        col=c("white","gray90","gray75","gray50","gray25","gray10"))
+  axis(1,1:nrow(tmpWhich),rownames(tmpWhich))
+  axis(2,1:ncol(tmpWhich),colnames(tmpWhich),las=2)
+}
+par(old.par)
+```
+
+Similar observations can be made using cross-validation rather than the split of the dataset into training and test that is omitted here for the purposes of brevity.
+
+## Ridge for variable selection:
+
+As explained in the lecture and ISLR Ch.6.6 lasso and ridge regression can be performed by `glmnet` function from library `glmnet` -- its argument `alpha` governs the form of the shrinkage penalty, so that `alpha=0` corresponds to ridge and `alpha=1` -- to lasso regression.  The arguments to `glmnet` differ from those used for `lm` for example and require specification of the matrix of predictors and outcome separately.  `model.matrix` is particularly helpful for specifying matrix of predictors by creating dummy variables for categorical predictors:
+
+```{r ridgeAlgaeAG2,fig.width=6,fig.height=6}
+# -1 to get rid of intercept that glmnet knows to include:
+x <- model.matrix(AG2~.,algaeAG2)[,-1]
+head(algaeAG2)
+# notice how it created dummy variables for categorical attributes
+head(x)
+y <- algaeAG2[,"AG2"]
+ridgeRes <- glmnet(x,y,alpha=0)
+plot(ridgeRes)
+```
+
+Plotting output of `glmnet` illustrates change in the contributions of each of the predictors as amount of shrinkage changes.  In ridge regression each predictor contributes more or less over the entire range of shrinkage levels.
+
+Output of `cv.glmnet` shows averages and variabilities of MSE in cross-validation across different levels of regularization.  `lambda.min` field indicates values of $\lambda$ at which the lowest average MSE has been achieved, `lambda.1se` shows larger $\lambda$ (more regularization) that has MSE 1SD (of cross-validation) higher than the minimum -- this is an often recommended $\lambda$ to use under the idea that it will be less susceptible to overfit. You may find it instructive to experiment by providing different levels of lambda other than those used by default to understand sensitivity of `gv.glmnet` output to them.  `predict` depending on the value of `type` argument allows to access model predictions, coefficients, etc. at a given level of lambda:
+
+```{r cvRidgeAlgaeAG2,fig.width=6,fig.height=6}
+cvRidgeRes <- cv.glmnet(x,y,alpha=0)
+plot(cvRidgeRes)
+cvRidgeRes$lambda.min
+cvRidgeRes$lambda.1se
+predict(ridgeRes,type="coefficients",s=cvRidgeRes$lambda.min)
+predict(ridgeRes,type="coefficients",s=cvRidgeRes$lambda.1se)
+# and with lambda's other than default:
+cvRidgeRes <- cv.glmnet(x,y,alpha=0,lambda=10^((-80:80)/20))
+plot(cvRidgeRes)
+```
+
+Similarly to what was observed for variable selection methods above, plot of cross-validation error for ridge regression has well-defined minimum indicating that some amount of regularization is necessary for the model using all attributes to prevent overfitting.  Notice that minimum $MSE\simeq 1.25$ from ridge regression here is very comparable to the minimum observed above for average test error when variables were selected by `regsubsets`.
+
+Relatively higher contributions of C1 and C8 to the model outcomed are more apparent for the results of ridge regression performed on centered and, more importantly, scaled matrix of predictors:
+
+```{r scaledRidgeAlgaeAG2,fig.width=6,fig.height=6}
+ridgeResScaled <- glmnet(scale(x),y,alpha=0)
+plot(ridgeResScaled)
+cvRidgeResScaled <- cv.glmnet(scale(x),y,alpha=0)
+plot(cvRidgeResScaled)
+predict(ridgeResScaled,type="coefficients",s=cvRidgeResScaled$lambda.1se)
+```
+
+## Lasso for variable selection
+
+Lasso regression is done by the same call to `glmnet` except that now `alpha=1`.  One can see now how more coefficients become zeroes with increasing amount of shrinkage.  Notice that amount of regularization increases from right to left when plotting output of `glmnet` and from left to right when plotting output of `cv.glmnet`.
+
+```{r lassoAlgaeAG2,fig.width=6,fig.height=6}
+lassoRes <- glmnet(x,y,alpha=1)
+plot(lassoRes)
+cvLassoRes <- cv.glmnet(x,y,alpha=1)
+plot(cvLassoRes)
+# With other than default levels of lambda:
+cvLassoRes <- cv.glmnet(x,y,alpha=1,lambda=10^((-120:0)/20))
+plot(cvLassoRes)
+```
+
+Also well-defined minimum of cross-validation MSE for lasso regularization.
+
+```{r}
+predict(lassoRes,type="coefficients",s=cvLassoRes$lambda.1se)
+predict(lassoRes,type="coefficients",s=cvLassoRes$lambda.min)
+```
+
+As explained above and illustrated in the plots for the output of `cv.glmnet`, `lambda.1se` typically corresponds to more shrinkage with more coefficients set to zero by lasso. Use of scaled predictors matrix  makes for more apparent contributions of C1 and C8, and to smaller degree, C3:
+
+```{r scaledLassoAlgaeAG2,fig.width=6,fig.height=6}
+lassoResScaled <- glmnet(scale(x),y,alpha=1)
+plot(lassoResScaled)
+cvLassoResScaled <- cv.glmnet(scale(x),y,alpha=1)
+plot(cvLassoResScaled)
+predict(lassoResScaled,type="coefficients",s=cvLassoResScaled$lambda.1se)
+```
+
+
+### Lasso on train/test datasets:
+
+Lastly, we can run lasso on several training datasets and calculate corresponding test MSE and frequency of inclusion of each of the coefficients in the model:
+
+```{r lassoAlgaeAG2trainTest}
+lassoCoefCnt <- 0
+lassoMSE <- NULL
+for ( iTry in 1:30 ) {
+  bTrain <- sample(rep(c(TRUE,FALSE),length.out=nrow(x)))
+  cvLassoTrain <- cv.glmnet(x[bTrain,],y[bTrain],alpha=1)
+  lassoTrain <- glmnet(x[bTrain,],y[bTrain],alpha=1)
+  lassoTrainCoef <- predict(lassoTrain,
+                            type="coefficients",
+                            s=cvLassoTrain$lambda.1se)
+  lassoCoefCnt <- lassoCoefCnt + (lassoTrainCoef[-1,1]!=0)
+  lassoTestPred <- predict(lassoTrain,
+                           newx=x[!bTrain,],
+                           s=cvLassoTrain$lambda.1se)
+  lassoMSE <- c(lassoMSE,mean((lassoTestPred-y[!bTrain])^2))
+}
+mean(lassoMSE)
+lassoCoefCnt
+```
+
+One can conclude that typical lasso model includes two, sometimes three, coefficients and (by comparison with some of the plots above) that its test MSE is about what was observed for two to three variable models as chosen by the best subset selection approach.
+
+# Problem 1: the best subset selection (15 points)
+
+Using fund raising dataset from the week 4 problem set (properly preprocessed: shifted/log-transformed, predictions supplied with the data excluded) select the best subsets of variables for predicting `contrib` by the methods available in `regsubsets`.  Plot corresponding model metrics (rsq, rss, etc.) and discuss results presented in these plots (e.g. what number of variables appear to be optimal by different metrics) and which variables are included in models of which sizes (e.g. are there variables that are included more often than others?).
+
+It is up to you as to whether you want to include `gender` attribute in your analysis.  It is a categorical attribute and as such it has to be correctly represented by dummy variable(s).  If you do that properly (and above preface supplies abundant examples of doing that), you will be getting three extra points for each of the problems in this week problem set that (correctly!) included `gender` in the analysis for the possible total extra of 3x4=12 points.  If you prefer not to add this extra work, then excluding `gender` from the data at the outset (as you were instructed to do for week 4) is probably the cleanest way to prevent it from getting in the way of your computations and limit the points total you can earn for this problem set to the standard 60 points. 
+
+```{r}
+#read in raw data
+rawdata <- read.csv("fund-raising-with-predictions.csv")
+
+#eliminate predcontr column
+rawdata$predcontr <- NULL
+
+#log transform continuous variables.  1 is added to eliminate errors from a 
+#log(0)
+transformeddata <- log(rawdata[,1:12] + 1)
+
+#get the absolute values of correlation coefficients 
+absolute.correlation.values <-abs(cor(transformeddata$contrib,transformeddata))
+
+#order correlation coefficients
+colorder <- order(absolute.correlation.values,decreasing = TRUE)
+
+#orderd log transformed data by correlation coefficient
+ordereddata <- transformeddata[,colorder]
+
+#bind gender data back to log transformed data
+finaldata <- cbind(ordereddata, rawdata$gender)
+
+#reassign corrrect name to gender column
+names(finaldata)[names(finaldata) == "rawdata$gender"] <- "gender"
+
+#visually inspect to confirm dataframe is correct
+head(finaldata)
+```
+
+```{r, fig.width=9,fig.height=6}
+summaryMetrics1 <- NULL
+
+whichAll1 <- list()
+
+for ( myMthd in c("exhaustive", "backward", "forward", "seqrep") ) {
+  
+  rsRes1 <- regsubsets(contrib~.,finaldata,method=myMthd,nvmax = 13)
+  
+  summRes1 <- summary(rsRes1)
+  
+  whichAll1[[myMthd]] <- summRes1$which
+  
+  for ( metricName in c("rsq","rss","adjr2","cp","bic") ) {
+    
+    summaryMetrics1 <- rbind(summaryMetrics1,
+                             data.frame(method=myMthd,metric=metricName,
+                                        nvars=1:length(summRes1[[metricName]]),
+                                        value=summRes1[[metricName]])
+                             )
+  }
+}
+
+ggplot(summaryMetrics1,aes(x=nvars,y=value,shape=method,colour=method)) + 
+  geom_path() + 
+  geom_point() + 
+  facet_wrap(~metric,scales="free") +
+  theme(legend.position="top")+theme_bw()
+```
+
+Optimal number of variables to include in the model by criteria name:
+
+$R^2$: The highest value appears at 8 terms followed by a plateau however there is a significant drop in incremental model explainability after about the 3rd or 4th term.
+
+RSS: The lowest residual is again found at the 8th term followed by a plateau however there is a significant drop in incrememntal model residuals
+after the 3rd or 4th term.
+
+Adj. $R^2$: The maximum appears to be around the 7th term however there is a significant drop in incremental model explainability after the 
+3rd or 4th term.
+
+Cp: The minimum occurs at 7 terms however these is only incremental value past the 3rd or 4th terms.
+
+BIC: The minimum occurs at the 7th term for all but the sequential method.  There is only incremental reduction after the 3rd or 4th term.
+
+Based on the analysis of all tests above, I see that 3 or 4 is the optimal number of predictors for the model.  
+
+
+```{r, fig.width=8,fig.height=8}
+old.par <- par(mfrow=c(2,2),ps=16,mar=c(5,7,2,1))
+
+for ( myMthd in names(whichAll1) ) {
+  
+  image(1:nrow(whichAll1[[myMthd]]),
+        1:ncol(whichAll1[[myMthd]]),
+        whichAll1[[myMthd]],
+        xlab="N(vars)",
+        ylab="",
+        xaxt="n",
+        yaxt="n",
+        breaks=c(-0.5,0.5,1.5),
+        col=c("white","gray"),
+        main=myMthd
+        )
+  
+  axis(1,1:nrow(whichAll1[[myMthd]]),rownames(whichAll1[[myMthd]]))
+  
+  axis(2,1:ncol(whichAll1[[myMthd]]),colnames(whichAll1[[myMthd]]),las=2)
+}
+
+par(old.par)
+```
+
+All four methods agree that the most useful variables in the model are (in order of importance):
+
+1) avecontr
+2) lastcontr
+3) maxdate
+
+After these top three are added to the model, the different methods evaluate importance of variables differently.  mincontrib, mindate, maxcontrib and ncontrib are generally the next most valuable predictors but their order varies based on the method used.  
+
+That the optimal number of terms for the model is 3 or 4 and that all four methods agree on the top 4 most valuable predictors, I find that the optimal model has 3 predictors: intercept, avecontr, lastcontr, and maxdate.
+
+# Problem 2: the best subset on training/test data (15 points)
+
+Splitting fund raising dataset into training and test as shown above, please calculate and plot training and test errors (MSE) for each model size for the methods available for `regsubsets`.  Using `which` field investigate stability of variable selection at each model size across multiple selections of training/test data.  Discuss these results -- e.g. what model size appears to be the most useful by this approach, what is the error rate corresponing to it, how stable is this conclusion across multiple methods for the best subset selection, how does this error compare to that of the predictions provided with the data (`predcontr` attribute)?
+
+```{r}
+predict.regsubsets <- function (object, newdata, id, ...){
+  form=as.formula(object$call [[2]])
+  mat=model.matrix(form,newdata)
+  coefi=coef(object,id=id)
+  xvars=names (coefi)
+  mat[,xvars] %*% coefi
+}
+```
+
+```{r}
+dfTmp1 <- NULL
+
+whichSum1 <- array(0,
+                   dim=c(13,14,4),
+                   dimnames=list(NULL,
+                                  colnames(model.matrix(contrib~.,finaldata)),
+                                  c("exhaustive", 
+                                    "backward", 
+                                    "forward", 
+                                    "seqrep"))
+                   )
+
+# Split data into training and test 30 times:
+nTries1 <- 30
+
+for ( iTry in 1:nTries1 ) {
+  
+  bTrain1 <- sample(rep(c(TRUE,FALSE),
+                        length.out=nrow(finaldata))
+                    )
+  
+  # Try each method available in regsubsets
+  # to select the best model of each size:
+  for ( jSelect in c("exhaustive", "backward", "forward", "seqrep") ) {
+    
+    rsTrain1 <- regsubsets(contrib~.,finaldata[bTrain1,],
+                           nvmax=13,
+                           method=jSelect)
+    
+    # Add up variable selections:
+    whichSum1[,,jSelect] <- whichSum1[,,jSelect] + summary(rsTrain1)$which
+    
+    # Calculate test error for each set of variables
+    # using predict.regsubsets implemented above:
+    for ( kVarSet in 1:13 ) {
+      
+      # make predictions:
+      testPred1 <- predict(rsTrain1,finaldata[!bTrain1,],id=kVarSet)
+      
+      # calculate MSE:
+      mseTest1 <- mean((testPred1-finaldata[!bTrain1,"contrib"])^2)
+      
+      # add to data.frame for future plotting:
+      dfTmp1 <- rbind(dfTmp1,
+                      data.frame(sim=iTry,
+                                 sel=jSelect,
+                                 vars=kVarSet,
+                                 mse1=c(mseTest1,                             
+                                       summary(rsTrain1)$rss[kVarSet]/
+                                         sum(bTrain1)
+                                       ),
+                                 trainTest=c("test","train")
+                                )
+                      )
+    }
+  }
+}
+
+# plot MSEs by training/test, number of 
+# variables and selection method:
+ggplot(dfTmp1,aes(x=factor(vars),y=mse1,colour=sel)) +
+  geom_boxplot()+ 
+  facet_wrap(~trainTest)+ 
+  theme_bw()
+```
+
+The plots above show that the test MSE bottoms out around 8 or 9 factors in the model and then either stabilizes or begins to raise slightly.  This signifies the start of overfitting in the model.  
+
+The MSE for the test data at each model size and method is slightly higher than the corresponding value for the training data which is consistent with what we expect.
+
+The MSE improvement in both the training and the test data begins to shrink drastically after the 2nd variable.
+
+Note that the mean MSEs are stable across all model types in the training in the test data.  The only exception in the sequence method median is slightly elevated when the number of variables is 7 and 8.
+
+The top tails of the whiskers in the test data appear to plateau around the 6th variable.  
+
+There are outlier MSEs in the test data for the backward method of model size 3 and in the training data for all four methods at model size 2.  
+
+In summary, these plots suggest that the model is best stabilized across size and method using 6 to 8 variables.  As previously noted, the mean MSE across methods for 7 and 8 variables in the test data is slightly elevated for the sequential method.  
+
+Given this, the most stable number of variables considering all methods is 6.  The sequential method has a longer top whisker than the others however this is more acceptable than an elevated mean.
+
+```{r}
+#evaulate the mean MSE for all test data with a model size of 6 by method
+mean.mse.e <- with(dfTmp1, 
+                   mean(mse1[vars == 6 & 
+                             trainTest == 'test' & 
+                             sel == "exhaustive"]))
+cat("exhaustive:",mean.mse.e)
+
+mean.mse.b <- with(dfTmp1, 
+                   mean(mse1[vars == 6 & 
+                             trainTest == 'test' & 
+                             sel == "backward"]))
+cat("\nbackward:",mean.mse.b)
+
+mean.mse.f <- with(dfTmp1, 
+                   mean(mse1[vars == 6 & 
+                             trainTest == 'test' & 
+                             sel == "forward"]))
+cat("\nforward:",mean.mse.f)
+
+mean.mse.s <- with(dfTmp1, 
+                   mean(mse1[vars == 6 & 
+                             trainTest == 'test' & 
+                             sel == "seqrep"]))
+cat("\nseqrep:",mean.mse.s)
+```
+
+Note that the means across all four methods are relatively stable with the first three methods having extremely close values.
+
+```{r}
+modelcomparisondata <- read.csv("fund-raising-with-predictions.csv")
+
+modelcomparisondata$gender <- NULL
+
+transformedmodelcomparisondata <- log(modelcomparisondata + 1)
+
+errorcomparison <- mean((transformedmodelcomparisondata$contrib - 
+                           transformedmodelcomparisondata$predcontr)^2)
+
+cat("The MSE of the competition prediction:",errorcomparison,"
+    \nThe MSEs of all methods using a 6 variable model beat the prediction
+    \nproduced from the competition.")
+```
+
+ 
+
+# Problem 3: lasso regression (15 points)
+
+Fit lasso regression model of the outcome in fund raising dataset.  Plot and discuss `glmnet` and `cv.glmnet` results.  Compare coefficient values at cross-validation minimum MSE and that 1SE away from it -- which coefficients are set to zero?  Experiment with different ranges of `lambda` passed to `cv.glmnet` and discuss the results.
+
+```{r}
+# -1 to get rid of intercept that glmnet knows to include:
+x1 <- model.matrix(contrib~.,finaldata)[,-1]
+# notice how it created dummy variables for categorical attributes
+head(x1)
+y1 <- finaldata[,"contrib"]
+```
+
+```{r}
+lassoRes1 <- glmnet(x1,y1,alpha=1)
+plot(lassoRes1, label=TRUE)
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1)
+plot(cvLassoRes1)
+```
+
+
+```{r}
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1,lambda=10^((-150:150)/20))
+plot(cvLassoRes1)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+```{r}
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1,lambda=10^((-100:0)/20))
+plot(cvLassoRes1)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+```{r}
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1,lambda=10^((-80:10)/20))
+plot(cvLassoRes1)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+
+```{r}
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1,lambda=10^((-75:0)/20))
+plot(cvLassoRes1)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+```{r}
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1,lambda=10^((-60:0)/20))
+plot(cvLassoRes1)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+```{r}
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1,lambda=10^((-55:-27)/20))
+plot(cvLassoRes1)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+
+```{r}
+lassoRes1 <- glmnet(x1,y1,alpha=1)
+plot(lassoRes1, label=TRUE)
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1)
+plot(cvLassoRes1)
+cvLassoRes1 <- cv.glmnet(x1,y1,alpha=1,lambda=10^((-80:-1)/20))
+plot(cvLassoRes1)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.1se)
+predict(lassoRes1,type="coefficients",s=cvLassoRes1$lambda.min)
+```
+
+The glmnet results show that the gender and age variables are always zero no matter what value of lambda is chosen.
+
+When the lambda minimum value is chosen we see that the model always includes 10 variables, only excluding age and gender each time.
+
+When the 1 standard error method is chosen to prevent overfitting, we see that between 3 and 5 variables are used in the model, depending on the range of lambda that is chosen.  4 variable models are the most common.
+
+In all models using the 1 standard error method we see that avecontr, lastcontr, and maxcontrib non-zero.  Maxdate drops to 0 when the lambda range is largest (-150 to 150).  It should also be noted that the coefficient values for avecontr, lastcontr, and maxcontrib are very stable over the range of lambdas tested.  
+
+When using the 1 standard error method, the coefficient of maxdate tends to fluxuate from 0.08 to 0.3 depending on the range of lambda chosen.  When the coefficient of maxdate is higher the intercept of the model tends to be greater than -0.5 and when the coefficient of maxdate is lower the intercept tends to be less than -2.0.  The coefficient of maxdate is stable using the lambda min method.  
+
+Ultimately, the optimal number of predictors to select from this method appears to be 4.
+
+
+# Problem 4: lasso in resampling (15 points)
+
+Similarly to the example shown in Preface above use resampling to estimate test error of lasso models fit to training data and stability of the variable selection by lasso across different splits of data into training and test.  Use resampling approach of your choice.  Compare typical model size to that obtained by the best subset selection above.  Compare test error observed here to that of the predictions supplied with the data (`predcontr`) and the models fit above -- discuss the results.
+
+```{r}
+lassoCoefCnt1 <- 0
+lassoMSE1 <- NULL
+for ( iTry in 1:30 ) {
+  bTrain1 <- sample(rep(c(TRUE,FALSE),length.out=nrow(x1)))
+  cvLassoTrain1 <- cv.glmnet(x1[bTrain1,],y1[bTrain1],alpha=1)
+  lassoTrain1 <- glmnet(x1[bTrain1,],y1[bTrain1],alpha=1)
+  lassoTrainCoef1 <- predict(lassoTrain1,
+                             type="coefficients",
+                             s=cvLassoTrain1$lambda.1se)
+  lassoCoefCnt1 <- lassoCoefCnt1 + (lassoTrainCoef1[-1,1]!=0)
+  lassoTestPred1 <- predict(lassoTrain1,
+                            newx=x1[!bTrain1,],
+                            s=cvLassoTrain1$lambda.1se)
+  lassoMSE1 <- c(lassoMSE1,mean((lassoTestPred1-y1[!bTrain1])^2))
+}
+mean(lassoMSE1)
+lassoCoefCnt1
+```
+
+The typical model size for this resampling approach has three variables: avecontr, lastcontr, and maxcontrib.  In a much lower number of instances, the model will utilize ncontrib and maxdate.  The test error of 0.1268273 is significantly lower than the predcontr MSE of 0.1684972.

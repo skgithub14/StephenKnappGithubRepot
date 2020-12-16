@@ -1,0 +1,377 @@
+---
+title: "CSCI E-63C Week 9 Problem Set"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(cluster)
+library(clue)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Preface
+
+For this problem set we will exercise some of the measures for evaluating "goodness of clustering" presented in the lecture this week on the clusters obtained for the World Health Statistics (WHS) dataset from week 8.  Please feel free to either adapt/reuse code presented in lecture slides as necessary or use implementations already available in R.  All problems presented below are expected to be performed on *scaled* WHS data -- if somewhere it is not mentioned explicitly, then please assume that it is still scaled data that should be used. 
+
+Lastly, as a dose of reality check: WHS is a dataset capturing variability of population health measures across more or less the entire diversity of societies in the world -- please be prepared to face the fact that resulting clustering structures are far from textbook perfect, they may not be very clearly defined, etc.
+
+## Note on quakes data (and *3 extra points per problem*) 
+
+As you will notice, WHS dataset does not have the most striking cluster structure to it, at least as far as few formal measurements of cluster strength that we are working with this week are concerned (or the very notion that there is a well defined "optimal" number of clusters that manifests itself in markedly "better" metrics compared to different cluster numbers). It's not an uncommon situation for the data we often have to work with.
+
+In this assignment we also offer you the opportunity to see the output of the code used/developed for problems in this set when applied to data with more distinct substructure (and to earn extra points by doing that!). Once you have generated required plots for WHS dataset in each of the five problems presented below (four required ones plus the extra points subsection), add the same kinds of plots but for a standard R dataset "quakes" and by doing that earn (up to) *3 extra points* for *each* problem.  Thus, if everything works perfectly this could add another 15 points to the total for this week (5 problems x 3 extra points each), so that along with the extra 5 points problem below, there is an opportunity of adding up to 20 extra points to this week total.
+
+Dataset "quakes" is routinely available in R and is autoloaded by default: the following should just work without any further steps for a standard R installation:
+
+```{r,fig.width=6,fig.height=6}
+clr <- gray((quakes$depth-min(quakes$depth))/
+                as.vector(range(quakes$depth)%*%c(-1,1)))
+plot(quakes$lat,quakes$long,col=clr)
+```
+ 
+or, similarly, if you are a ggplot fan (in which case you will know to load ggplot2 library first):
+
+```{r,fig.width=6,fig.height=6}
+ggplot(quakes,aes(x=lat,y=long,colour=depth))+geom_point()
+```
+ 
+If you write your code with reusability in mind, applying it to "quakes" should be just a straightforward drop-in replacement of WHS data frame with that of "quakes".  You will see that the subclasses of observations are so well defined in "quakes" that it is almost boring in its own way.  Nothing is perfect in this world, but you should see more interesting behavior of CH index in this case, for example.
+
+To get the most (in terms of learning and points) out of this exercise (applying the same methods to two different datasets) please consider this as an opportunity to reflect on the differences in the behaviour / outcome of the same method when applied to two different datasets.  In particular, think about the following questions (you don't have to answer these in writing, specifically -- they are just to help you spot the differences and interpret them) :
+
+* What would be the behaviour of those metrics if the "true" number of clusters was two?
+* For the quakes dataset -- what subsets of observations correspond to the clusters found by K-means / hierarchical clustering?
+* Do they correspond to visually apparent groups of observations?  Quakes is relatively low dimensional dataset after all -- location in 3D and magnitude, plus number of stations highly correlated with magnitude.
+* How are those numbers of clusters reflected in the plots of "clustering strength" metrics (CH-index, gap statistic etc.)?
+* Are there any attributes in quakes dataset that are skewed enough to justify data transformation?  What would be an effect of that?
+* Back to WHS dataset -- what are the differences in the behavior of those metrics (CH-index, etc.) between quakes and WHS dataset?
+
+Once again, the complete answer to the extra points question does *not* have to include written answers to each (or any) of the specific questions asked above, but it should provide some form of the summary of the insights you have developed from comparing the results for these two datasets.
+
+# Problem 1: within/between cluster variation and CH-index (15 points)
+
+Present plots of CH-index as well as (total) within and between cluster variance provided by K-means clustering on scaled WHS data for 2 through 20 clusters.  Choose large enough value of `nstart` for better stability of the results across multiple trials and evaluate stability of those results across several runs.  Discuss the results and weigh on whether the shapes of the curves suggest specific number of clusters in the data.
+
+```{r}
+raw.data <- read.csv("whs2018_AnnexB-subset-wo-NAs.txt", 
+                     header = TRUE, 
+                     sep = "\t")
+head(raw.data)
+```
+
+```{r}
+scaled.data <- scale(raw.data)
+pcaResTmp <- prcomp(scaled.data)
+plot(pcaResTmp)
+```
+
+
+
+```{r}
+cids <- kmeans(scaled.data,centers=2,nstart=10)$cluster
+plot(pcaResTmp$x[,1:2],type="n",main="Scaled")
+text(pcaResTmp$x[,1:2],rownames(pcaResTmp$x),col=cids,pch=15+cids)
+```
+
+```{r}
+#set.seed(112)
+nstarts <- c(5,10,25,50,100)
+for (j in nstarts) {
+    w=numeric(20)
+    for ( k in 1:20 ) {
+        kf=kmeans(scaled.data,k,nstart=j)
+        w[k] = kf$tot.withinss
+    }
+    plot(1:20,w,
+         type="b",lwd=2,pch=19,
+         xlab="K", ylab=expression(SS[within]),
+         ylim = c(0,25000), xlim = c(2,20), 
+         main = paste0("Within Cluster Variation, nstart:",j))
+
+    for ( i in 1:10 ) {
+        wrnd = numeric()
+        wsmpl = numeric()
+        for ( k in 1:20 ) {
+            krnd = kmeans(apply(scaled.data,2,
+                                function(x){
+                                    runif(length(x),min(x),max(x))}),
+                          k,nstart=j)
+            ksmpl = kmeans(apply(scaled.data,2,sample),k,nstart=j)
+            wrnd[k] = krnd$tot.withinss
+            wsmpl[k] = ksmpl$tot.withinss
+        }
+        points(wrnd,type="l",col="red")
+        points(wsmpl,type="l",col="blue")
+    }
+}
+```
+
+I'm going to rerun the code above to zoom in and see if there's a more visible elbow.  In the current view, it appears the elbow exists a K=2.
+
+As for stability across different nstart values, the model appears to be unstable for values 100 and below due to the fact I received multiple errors, "did not converge in 10 iterations."  This error appeared on most runs of the code but not all.  I will not increase the iter.max parameter in the kmeans() functions to allow the model to reach an optimal value.  
+
+```{r}
+#set.seed(112)
+nstarts <- c(5,10,25,50,100)
+for (j in nstarts) {
+    w=numeric(20)
+    for ( k in 1:20 ) {
+        kf=kmeans(scaled.data,k,iter.max = 30,nstart=j)
+        w[k] = kf$tot.withinss
+    }
+    plot(1:20,w,
+         type="b",lwd=2,pch=19,
+         xlab="K", ylab=expression(SS[within]),
+         ylim = c(0,8000), xlim = c(2,20), 
+         main = paste0("Within Cluster Variation, nstart:",j))
+
+    for ( i in 1:10 ) {
+        wrnd = numeric()
+        wsmpl = numeric()
+        for ( k in 1:20 ) {
+            krnd = kmeans(apply(scaled.data,2,
+                                function(x){
+                                    runif(length(x),min(x),max(x))}),
+                          k,iter.max = 30,nstart=j)
+            ksmpl = kmeans(apply(scaled.data,2,sample),k,iter.max = 30,nstart=j)
+            wrnd[k] = krnd$tot.withinss
+            wsmpl[k] = ksmpl$tot.withinss
+        }
+        points(wrnd,type="l",col="red")
+        points(wsmpl,type="l",col="blue")
+    }
+}
+```
+
+Increasing iter.max to 30 removed the error.  For the zoomed data, there is more clarity and the elbow appears at K=3.  Additional K's after 3 appear to only add the same amount of incremental value.  
+
+The curves appears highly stable across the range of nstart values from 5 - 100.  After several runs, the inference of K=3 is also very stable.
+
+```{r}
+nstarts <- c(5,10,25,50,100)
+for (j in nstarts) {
+    btw=numeric(20)
+    for ( k in 1:20 ) {
+        kf=kmeans(scaled.data,k,iter.max = 30,nstart=j)
+        btw[k] = kf$betweenss
+    }
+    plot(1:20,btw,
+         type="b",lwd=2,pch=19,
+         xlab="K",ylab=expression(SS[between]),
+         ylim=c(0,5000),xlim = c(2,20),
+         main = paste0("Between Cluster Variation, nstart:",j))
+
+    for ( i in 1:10 ) {
+        btwrnd = numeric()
+        btwsmpl = numeric()
+        for ( k in 1:20 ) {
+            krnd = kmeans(apply(scaled.data,2,
+                                function(x){
+                                    runif(length(x),min(x),max(x))}),
+                          k,iter.max = 30,nstart=j)
+            ksmpl = kmeans(apply(scaled.data,2,sample),k,iter.max = 30,nstart=j)
+            btwrnd[k] = krnd$betweenss
+            btwsmpl[k] = ksmpl$betweenss
+        }
+    points(btwrnd,type="l",col="red")
+    points(btwsmpl,type="l",col="blue")
+    }
+}
+```
+
+For the between cluster variation, there is a little less stability across nstart values.  Using an n greater than 10 seems to increase stability.
+
+The elbow for this method appears at K=3.  Additional K's after this just incrementally increase the value of the variation.  You can see a very distinct break from red line at K=3 as well further confirming the number of clusters is valid.
+
+After several runs, the inference that K=3 is also stable.  
+
+```{r}
+nstarts <- c(5,10,25,50,100)
+for (j in nstarts) {
+    chori=numeric(20)
+    for ( k in 2:20 ) {
+        kf=kmeans(scaled.data,k,iter.max = 30,nstart=10)
+        chori[k] = (kf$betweenss/(k-1)) / 
+            (kf$tot.withinss/(nrow(scaled.data)-k))
+    }
+    plot(2:20,chori[-1],type="b", lwd=2,pch=19,xlab="K", ylab="CHindex",ylim=range(chori[-1])*c(0,1),xlim = c(2,20),
+         main = paste0("CH Ratio, nstart:",j))
+
+    for ( i in 1:10 ) {
+        chrnd = numeric()
+        chsmpl = numeric()
+        for ( k in 2:20 ) {
+            krnd = kmeans(apply(scaled.data,2,
+                                function(x){
+                                    runif(length(x),min(x),max(x))}),
+                          k,iter.max = 30,nstart=10)
+            chrnd[k] = (krnd$betweenss/(k-1)) / 
+                (krnd$tot.withinss/(nrow(scaled.data)-k))
+            ksmpl = kmeans(apply(scaled.data,2,sample),
+                           k,iter.max = 30,nstart=10)
+            chsmpl[k] = (ksmpl$betweenss/(k-1)) / 
+                (ksmpl$tot.withinss/(nrow(scaled.data)-k))
+        }
+    points(2:20,chrnd[-1],type="l",col="red")
+    points(2:20,chsmpl[-1],type="l",col="blue")
+    }
+}
+```
+
+For the CH index variation, there is a little less stability across nstart values.  Using an n greater than 10 seems to increase stability.  This is likely due to the relation to the between cluster variation which saw similar instability.  
+
+The elbow for this method appears at K=4.  Additional K's after this just incrementally decrease the value of CH index.
+
+After several runs, the inference that K=4 is also stable.  
+
+Let's try replotting with K=3 and K=4.  
+
+```{r}
+for (i in 3:4) {
+    cids <- kmeans(scaled.data,centers=i,nstart=100, iter.max = 30)$cluster
+    plot(pcaResTmp$x[,1:2],type="n",main="Scaled")
+    text(pcaResTmp$x[,1:2],rownames(pcaResTmp$x),col=cids,pch=15+cids)
+}
+```
+
+Visually, the 4th cluster does not appear to make much sense.  It seems to have grouped two outlier values together as a cluster.  Based on this I conclude that the inferences from the between and within cluster variance are accurate and that K=3.
+
+This conclustion was stable across multiple runs and values of nstart greater than 10.  
+
+# Problem 2: gap statistics (15 points)
+
+Using the code provided in the lecture slides for calculating gap statistics or one of its implementations available in R (e.g. `clusGap` from library `cluster`), compute and plot gap statistics for K-means clustering of the scaled WHS data for 2 through 20 clusters.  Discuss whether it indicates presence of clearly defined cluster structure in this data.
+
+```{r}
+cgScaled <- clusGap(scaled.data,FUN = kmeans,K.max=20,
+                    B=500,d.power=2,spaceH0 = "scaledPCA",
+                    nstart=100, iter.max=30)
+head(cgScaled$Tab)
+maxSE(cgScaled$Tab[,"gap"],cgScaled$Tab[,"SE.sim"])
+```
+
+```{r}
+plot(2:20,cgScaled$Tab[2:20,"gap"], pch=19, type="b", xlab = "k", ylab = "Gapk")
+arrows(2:20, cgScaled$Tab[2:20,"gap"] - cgScaled$Tab[2:20,"SE.sim"], 2:20, cgScaled$Tab[2:20,"gap"] + cgScaled$Tab[2:20,"SE.sim"], 
+       length = 0.05, angle = 90, code = 3)
+```
+
+After multiple runs at the default boostrap value of 100 and stable nstart value of 100, I noticed that the local maximum would change between k=3 and k=4.  The gap values were very similar to each other, differing by 0.001.  In order to get a more accurate and stable local maximum, I increased the number of bootstrap runs to 500.  I was able to achieve a consistent result of the local maximum occuring at k=3 for 2 runs.  I will note that the SE bars for k=3 and k=4 are very similar as well however you can see that the k=4 se bars are slightly lower than k=3 which also lends evidence to the local maximum being at k=3.  Repeated runs will likely continue to vary slightly because the se bars overlap so much.
+
+# Problem 3: stability of hierarchical clustering (15 points)
+
+For numbers of clusters K=2, 3 and 4 found in the scaled WHS dataset by (1) `hclust` with Ward method (as obtained by `cutree` at corresponding levels of `k`) and (2) by K-means, compare cluster memberships between these two methods at each K and describe their concordance.  This problem is similar to the one from week 8 problem set, but this time it is *required* to: 1) use two dimensional contingency tables implemented by `table` to compare membership between two assignments of observations into clusters, and 2) programmatically re-order rows and columns in the `table` result to correctly identify the correspondence between the clusters (please see examples in lecture slides).
+
+```{r}
+dist.scaled.data <- dist(scaled.data)
+heir <- hclust(dist.scaled.data, method = "ward.D2")
+```
+
+```{r}
+library(clue)
+matrix.sort <- function(m) {
+    require(clue)
+    p = solve_LSAP(m, maximum=TRUE) 
+    m[,p]
+}
+
+cmp.shortcut <- function(kdata,heirdata,K,nstart=100,iter.max=30,...) {
+    matrix.sort(table(
+        kmeans(kdata, K, ...)$cluster,
+        cutree(heirdata, K, ...)))
+}
+
+```
+
+```{r}
+for (i in 2:4) {
+    print(cmp.shortcut(scaled.data, heir, i))
+}
+```
+
+The contingency tables show along their diagonals the number of contries that appeared in the same cluster between the two methods.  This means we want to see higher numbers along the diagonal and lower numbers off of the diagonal which is our case above.
+
+In the k=2 comparison, we see only 7 total countries are inconsistently assigned to groups.
+
+In the k=3 comparison, we see four "0" values off the diagonal which is a very good result.  However there are still 25 countries total that have inconsistent cluster assignments between the two methods.  In this example, we see just one row that contains the 25 countries which indicates that the discrepancy is limited to just two clusters, not all three.
+
+In the k=4 comparison, we see five "0" values off the diagonal which is also very good.  There are a total of 21 countries that are inconsistently classified which is a slight improvement over k=3.  Additionally, we see that several 1's, 2's and 3's off the diagonal which again indicates higher concordance between the two models.  The single "12" off the of the diagonal indicates there is a bit more disagreement bewteen the boundries of just two groups in the models.  
+
+## For *extra* 5 points: between/within variance in hierarchical clusters
+
+Using functions `between` and `within` provided in the lecture slides calculate between and (total) within cluster variances for top 2 through 20 clusters defined by Ward's hierarchical clustering when applied to the scaled WHS data.  Plot the results.  Compare their behavior to that of the same statistics when obtained for K-means clustering above.
+
+```{r}
+within=function(d,clust ) {
+    w=0
+    for (i in sort(unique( clust )) ){
+        members = d[clust==i,,drop=F]
+        centroid = apply(members,2,mean)
+        members.diff = sweep(members,2,centroid)
+        w = w+sum(members.diff^2)
+    }
+    return(w)
+}
+
+between=function(d, clust) {
+    b=0
+    total.mean = apply(d,2,mean)
+    for (i in sort(unique(clust)) ) {
+        members = d[clust==i,,drop=F]
+        centroid = apply(members,2,mean)
+        b=b+nrow(members)*sum((centroid-total.mean)^2)
+    }
+    return(b)
+}
+```
+
+```{r}
+dwithin=numeric()
+dbetween=numeric()
+for (i in 2:20) {
+    hcut <- cutree(heir, i)
+    dwithin[i] <- within(scaled.data,hcut)
+    dbetween[i] <- between(scaled.data,hcut)
+}
+```
+
+```{r}
+plot(dwithin,type="b", lwd=2,pch=19,xlab="K", ylab="total within distance",
+     xlim = c(2,20),main = "Ward's Heirarchical Method")
+```
+
+```{r}
+plot(dbetween,type="b", lwd=2,pch=19,xlab="K", ylab="between distance",
+     xlim = c(2,20),main = "Ward's Heirarchical Method")
+```
+
+Both curves look very smooth and it makes it very hard to discern an elbow.  You can see the distance between the plotted points decreasing as k increases however but it is much more subtle than the elbow.  The line distance between the plotted points appears to change very little after about k=4 in both graphs.  
+
+The values of the plotted points in the y-axis (the total distances) are consistent with the plots obtained in part one.  
+
+# Problem 4: Brute force randomization in hierarchical clustering (15 points)
+
+Compare distribution of the heights of the clusters defined by `hclust` with Ward's clustering of Euclidean distance between countries in the scaled WHS dataset and those obtained by applying the same approach to the distances calculated on randomly permuted WHS dataset as illustrated in the lecture slides.  Discuss whether results of such brute force randomization are supportive of presence of unusually close or distant sets of observations within WHS data.
+
+```{r fig.width=15}
+ori.heights= heir$height
+rnd.heights= numeric()
+for (i.sim in 1:100 ) {
+  data.rnd<-apply(scaled.data,2,sample)
+  hw.rnd=hclust(dist(data.rnd ),method="ward.D2")
+  rnd.heights<-c( rnd.heights,hw.rnd$height)
+}
+plot(ori.heights,rank(ori.heights )/ length(ori.heights),
+     col="red",xlab ="height", ylab ="F(height)", pch =19)
+points(rnd.heights,rank(rnd.heights)/length(rnd.heights),col="blue")
+```
+
+The above plot indicates that the outliers for height occur after about 30.  Looking at the heirarchy below, a horizontal line at height=30 would cross three heirarchy lines therefore this method indicates that k=3.
+
+```{r fig.width=15, fig.height=20}
+plot(heir)
+```
+

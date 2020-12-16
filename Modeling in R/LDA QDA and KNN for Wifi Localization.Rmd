@@ -1,0 +1,420 @@
+---
+title: "CSCI E-63C Week 10 Problem Set"
+output:
+  html_document:
+    toc: true
+---
+
+# Preface
+
+For this week problem set we will use WiFi localization data (the one we worked with on week 2) to fit logistic regression model and evaluate performance of LDA, QDA and KNN classifiers.  As we have seen earlier this dataset should allow to locate phones fairly well by relying on the strength of WiFi signal, so we should expect to see fairly low error rates for our classifiers.  Let's see whether some of those classifiers perform better than others on this data.
+
+**Important note:** *For the purposes of all problems in this week problem set, we will be predicting whether the phone is at location=3 or not, as opposed to working with multi-class predictor.  In other words, before you proceed with any of the problems in this assignment, please convert the four-levels outcome to the outcome with only two levels: location=3 (must be 500 of those) and not (must be 1500 of them).*
+
+*If you are creating a new column containing this binary outcome, please make sure that the original outcome with four columns is NOT used inadvertently as one of the predictors.  If you are getting invariably 100% accuracy regardless of the choice of the method or split of the data into training and test, chances are your code is using original four-levels outcome as a predictor.*
+
+```{r}
+raw.data <- read.csv("wifi_localization.txt", sep="\t", header = FALSE)
+head(raw.data)
+```
+
+
+```{r}
+raw.data$V8[raw.data$V8 != 3] <- 0
+raw.data$V8[raw.data$V8 == 3] <- 1
+colnames(raw.data) <- c("X1", "X2", "X3", "X4", "X5", "X6", "X7", "Y")
+head(raw.data)
+```
+
+```{r}
+summary(raw.data)
+```
+
+```{r}
+library(ggplot2)
+library(GGally)
+```
+
+```{r fig.height=15, fig.width=15}
+ggpairs(raw.data, progress = FALSE)
+```
+
+
+# Problem 1 (10 points): logistic regression
+
+Fit logistic regression model of the binary categorical outcome (location=3 or not) using seven WiFi signals strengths as predictors in the model.  Produce summary of the model, describe which attributes appear to be significantly associated with the categorical outcome in this model.  Use this model to make predictions on the entire dataset and compare these predictions and corresponding true values of the class attribute using confusion matrix (i.e. contingency table).  Calculate error rate (would this be training or test error in this case?), sensitivity and specificity (assuming that we are predicting class "location=3").  Describe the results.
+
+```{r}
+glm.fit=glm(Y~., data = raw.data, family = binomial)
+summary(glm.fit)
+```
+
+All predictor variables are significant in for predicting the outcome.  X4 is the least significant with a p-value of 0.002513 and X3 and X5 are the most significant with p-values less than 2e-16.  
+
+```{r}
+glm.predict <- predict(glm.fit, newdata=raw.data[,1:7], type = "response")
+```
+
+```{r fig.width=15}
+plot(raw.data$Y, col=ifelse(raw.data$Y==1, "lightblue", "orange"),ylab = "P(loc=3)")
+points(glm.predict, col = ifelse(glm.predict>=0.5, "blue", "red"))
+abline(h=0.5)
+```
+
+```{r}
+assess.prediction=function(truth,predicted) {
+   # same length:
+   if ( length(truth) != length(predicted) ) {
+     stop("truth and predicted must be same length!")
+   }
+   # check for missing values (we are going to 
+   # compute metrics on non-missing values only)
+   bKeep = ! is.na(truth)  & ! is.na(predicted)
+   predicted = predicted[ bKeep ]
+   truth = truth[ bKeep ]
+   # only 0 and 1:
+   if ( sum(truth%in%c(0,1))+sum(predicted%in%c(0,1))!=2*length(truth) ) {
+     stop("only zeroes and ones are allowed!")
+   }
+   cat("Total cases that are not NA: ",
+         length(truth),"\n",sep="") 
+   # overall accuracy of the test: how many cases 
+   # (both positive and 
+   # negative) we got right:
+   cat("Correct predictions (accuracy): ",
+     sum(truth==predicted),
+     "(",signif(sum(truth==predicted)*100/
+     length(truth),3),"%)\n",sep="")
+   # how predictions align against known 
+   # training/testing outcomes:
+   # TP/FP= true/false positives, 
+   # TN/FN=true/false negatives
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN  # total number of
+         # positives in the truth data
+   N = FP+TN  # total number of
+              # negatives
+   cat("TP, TN, FP, FN, P, N:",TP, TN, FP, FN, P, N, fill=TRUE)
+   cat("TPR (sensitivity)=TP/P: ",
+       signif(100*TP/P,3),"%\n",sep="")
+   cat("TNR (specificity)=TN/N: ",
+       signif(100*TN/N,3),"%\n",sep="")
+   cat("PPV (precision)=TP/(TP+FP): ",
+       signif(100*TP/(TP+FP),3),"%\n",sep="")
+   cat("FDR (false discovery)=1-PPV: ",
+       signif(100*FP/(TP+FP),3),"%\n",sep="")
+   cat("FPR =FP/N=1-TNR: ",
+      signif(100*FP/N,3),"%\n",sep="")
+}
+```
+
+```{r}
+glm.predict[glm.predict >= 0.5] <- 1
+glm.predict[glm.predict < 0.5] <- 0
+```
+
+```{r}
+assess.prediction(raw.data$Y, glm.predict)
+```
+
+This model only predicts whether a phone is truly at location 3 only 35.6% of the time which is relatively poor.
+
+It does predict which phone are truly not at location 3 92.3% of the time however which is fairly good.
+
+The false discovery rate of 39.2% means that almost 4/10 phones are misidentified as being at location 3 even though they are not in reality.  
+
+In summary, the model relatively accurately can tell you what phone are not at location 3 but cannot reliably predict which phones are at location 3.  Overall it accuratley predicts if a phone is at location 3 or not 78.2% of the time. 
+
+The training error rate is given by 1 - accuracy = 21.8%.  Because the original data was used as the test data, it is actually the training error rate.
+
+# Problem 2 (10 points): LDA and QDA
+
+Using LDA and QDA implementations available in the package `MASS`, fit LDA and QDA classifiers on the entire dataset and calculate confusion matrix, (training) error rate, sensitivity and specificity for each of them.  Compare them to those of logistic regression.  Describe the results.
+
+```{r}
+library(MASS)
+```
+
+```{r}
+lda.fit <- lda(Y~., data=raw.data)
+lda.fit
+```
+
+```{r}
+lda.predict <- predict(lda.fit, newdata = raw.data[,1:7])
+```
+
+```{r}
+plot(raw.data$Y, col=ifelse(raw.data$Y==1, "lightblue", "orange"),ylab = "P(loc=3)")
+points(lda.predict$posterior[,2], col = ifelse(lda.predict$posterior[,2]>=0.5, "blue", "red"))
+abline(h=0.5)
+```
+
+```{r}
+assess.prediction(raw.data$Y, lda.predict$class)
+```
+
+The results of the LDA classification is very similar to the logistic regression.  The sensitivity, spedificity and precision vary by only a few tenths of a percent.  The overall accuracy is very similar as well at 78%.
+
+Visually, the plot looks identical to the logistic regression as well.
+
+```{r}
+qda.fit <- qda(Y~., data=raw.data)
+qda.fit
+```
+
+```{r}
+qda.predict <- predict(qda.fit, newdata = raw.data[,1:7])
+```
+
+```{r}
+plot(raw.data$Y, col=ifelse(raw.data$Y==1, "lightblue", "orange"),ylab = "P(loc=3)")
+points(qda.predict$posterior[,2], col = ifelse(qda.predict$posterior[,2]>=0.5, "blue", "red"))
+abline(h=0.5)
+```
+
+```{r}
+assess.prediction(raw.data$Y, qda.predict$class)
+```
+
+This model has a much higher sensitivity rate than the logistic and lda models at 88.2%.
+
+The specificity rate is even higher as well at 99.3%.
+
+The false discovery rate only 2.43%.  
+
+Overall this is a quality model with good prediction outcomes and low false positive and false negative rates.  The overall accuracy is 96.5% on the training data.
+
+Visually, the model looks to be plotting the locations very accurately as well.  
+
+The model does struggle more with failing to detect phone in location 3 more than it does detecting phone in other locations with is indicated by two things: The TPR rate being lower thatn the TNR rate and the proportion of red circles between indices 1000 and 1500 as compared to the blue circles from 0 to 1000 and 1500 to 2000.  
+
+This is the best model so far.
+
+# Problem 3 (10 points): KNN
+
+Using `knn` from library `class`, fit KNN classifiers for the entire dataset and calculate confusion matrix, (training) error rate, sensitivity/specificity for  $k=1$, $5$ and $25$ nearest neighbors models.  Compare them to the corresponding results from LDA, QDA and logistic regression. Describe results of this comparison and discuss whether it is surprising to see low *training* error for KNN classifier with $k=1$.
+
+```{r}
+library(class)
+```
+
+```{r}
+knn.pred.1 <- knn(train = raw.data[,1:7], test = raw.data[,1:7], cl=raw.data$Y)
+knn.pred.5 <- knn(train = raw.data[,1:7], test = raw.data[,1:7], cl=raw.data$Y, k=5)
+knn.pred.25 <- knn(train = raw.data[,1:7], test = raw.data[,1:7], cl=raw.data$Y, k=25)
+```
+
+```{r}
+#offset prediction values to plot
+knn.pred.1.adj <- as.numeric(knn.pred.1)-1
+knn.pred.1.adj[knn.pred.1.adj==1] <- 0.95
+knn.pred.1.adj[knn.pred.1.adj==0] <- 0.05
+
+knn.pred.5.adj <- as.numeric(knn.pred.5)-1
+knn.pred.5.adj[knn.pred.5.adj==1] <- 0.95
+knn.pred.5.adj[knn.pred.5.adj==0] <- 0.05
+
+knn.pred.25.adj <- as.numeric(knn.pred.25)-1
+knn.pred.25.adj[knn.pred.25.adj==1] <- 0.95
+knn.pred.25.adj[knn.pred.25.adj==0] <- 0.05
+```
+
+
+```{r}
+plot(raw.data$Y, col=ifelse(raw.data$Y==1, "lightblue", "orange"), ylab = "P(loc=3)")
+points(knn.pred.1.adj, col=ifelse(knn.pred.1.adj>=0.5, "blue", "red"))
+
+plot(raw.data$Y, col=ifelse(raw.data$Y==1, "lightblue", "orange"), ylab = "P(loc=3)")
+points(knn.pred.5.adj, col=ifelse(knn.pred.5.adj>=0.5, "blue", "red"))
+
+plot(raw.data$Y, col=ifelse(raw.data$Y==1, "lightblue", "orange"), ylab = "P(loc=3)")
+points(knn.pred.25.adj, col=ifelse(knn.pred.25.adj>=0.5, "blue", "red"))
+```
+
+```{r}
+assess.prediction(raw.data$Y, knn.pred.1)
+```
+
+```{r}
+assess.prediction(raw.data$Y, knn.pred.5)
+```
+
+
+```{r}
+assess.prediction(raw.data$Y, knn.pred.25)
+```
+
+The knn with k=1 1 model has a perfect accuracy, sensitivity, specificity and precision scores of 100%.  
+
+The training error rate is the complement of accuracy which is 0%.  This is not surprising given that the prediction dataset was the training data set.  KNN models with multi dimensions are more suseptible to overfitting because the number of unique distances is so specific at higher dimensionality.  This is especially true when using just one neighbor to perform the calculation because each prediction is relying soley on the value of only one data point.
+
+The knn with k=5 performed slightly less well but will be less suspectible to overfitting.   The sensitivity and specificity are all over 99%.  The training error was only 0.07%
+
+The knn with k=25 performed slightly less well as compared to both the k=5 and k=1 model but the sensitivity, specificity and all still above 98%.  The training error was 1.9%.  
+
+According to the metrics all 3 knn models perform better than the LDA, QDA and logistic regression models.  Again, this likely due to overfitting however.  
+
+# Problem 4 (30 points): compare test errors of logistic regression, LDA, QDA and KNN
+
+Using resampling approach of your choice (e.g. cross-validation, bootstrap, etc.) obtain test error as well as sensitivity and specificity for each of these methods (logistic regression, LDA, QDA, KNN with $k=1,7,55,351$).  Present results in the form of boxplots, compare test error/sensitivity/specificity across these methods and discuss their relative performance.
+
+```{r}
+#set-up
+nrep <- 100
+test.error.rate = matrix(nrow=nrep, ncol=7)
+sensitivity = matrix(nrow=nrep, ncol=7)
+specificity = matrix(nrow=nrep, ncol=7)
+i=1
+
+#random cross validation
+while (i < (nrep+1)){
+   #split data randomly into test and training sets
+   trainsplit <- ceiling(.7 * nrow(raw.data))
+   random.data <- raw.data[sample(nrow(raw.data)),]
+   train.data <- random.data[1:trainsplit,]
+   test.data <- random.data[(trainsplit+1):nrow(raw.data),]
+   train.data <- train.data[order(train.data$Y),]
+   test.data <- test.data[order(test.data$Y),]
+   truth <- test.data$Y
+   
+   #Logistic regression
+   glm.fit=glm(Y~., data = train.data, family = binomial)
+   glm.predict <- predict(glm.fit, newdata=test.data[,1:7], type = "response")
+   glm.predict[glm.predict >= 0.5] <- 1 #force variable to 0/1
+   glm.predict[glm.predict < 0.5] <- 0 #force variable to 0/1
+   predicted <- glm.predict
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN 
+   N = FP+TN
+   test.error.rate[i,1] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+   sensitivity[i,1] <- signif(100*TP/P,3)
+   specificity[i,1] <- signif(100*TN/N,3)
+   
+   #LDA
+   lda.fit <- lda(Y~., data=train.data)
+   lda.predict <- predict(lda.fit, newdata = test.data[,1:7])
+   predicted <- lda.predict$class
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN 
+   N = FP+TN
+   test.error.rate[i,2] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+   sensitivity[i,2] <- signif(100*TP/P,3)
+   specificity[i,2] <- signif(100*TN/N,3)
+   
+   #QDA
+   qda.fit <- qda(Y~., data=train.data)
+   qda.predict <- predict(qda.fit, newdata = test.data[,1:7])
+   predicted <- qda.predict$class
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN 
+   N = FP+TN
+   test.error.rate[i,3] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+   sensitivity[i,3] <- signif(100*TP/P,3)
+   specificity[i,3] <- signif(100*TN/N,3)
+   
+   #KNN
+   knn.pred.1 <- knn(train = train.data[,1:7], test = test.data[,1:7],
+                     cl=train.data$Y)
+   knn.pred.7 <- knn(train = train.data[,1:7], test = test.data[,1:7],
+                     cl=train.data$Y, k=7)
+   knn.pred.55 <- knn(train = train.data[,1:7], test = test.data[,1:7],
+                      cl=train.data$Y, k=55)
+   knn.pred.351 <- knn(train = train.data[,1:7], test = test.data[,1:7],
+                       cl=train.data$Y, k=351)
+   #k=1
+   predicted <- knn.pred.1
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN 
+   N = FP+TN 
+   test.error.rate[i,4] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+   sensitivity[i,4] <- signif(100*TP/P,3)
+   specificity[i,4] <- signif(100*TN/N,3)
+   #k=7
+   predicted <- knn.pred.7
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN 
+   N = FP+TN 
+   test.error.rate[i,5] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+   sensitivity[i,5] <- signif(100*TP/P,3)
+   specificity[i,5] <- signif(100*TN/N,3)
+   #k=7
+   predicted <- knn.pred.55
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN 
+   N = FP+TN 
+   test.error.rate[i,6] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+   sensitivity[i,6] <- signif(100*TP/P,3)
+   specificity[i,6] <- signif(100*TN/N,3)
+   #k=7
+   predicted <- knn.pred.351
+   TP = sum(truth==1 & predicted==1)
+   TN = sum(truth==0 & predicted==0)
+   FP = sum(truth==0 & predicted==1)
+   FN = sum(truth==1 & predicted==0)
+   P = TP+FN 
+   N = FP+TN 
+   test.error.rate[i,7] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+   sensitivity[i,7] <- signif(100*TP/P,3)
+   specificity[i,7] <- signif(100*TN/N,3)
+   
+   #update counter
+   i = i + 1
+}
+```
+
+```{r}
+cols <- c("LogReg", "LDA", "QDA", "KNN1", "KNN7", "KNN55", "KNN351")
+colnames(specificity) <- cols
+colnames(test.error.rate) <- cols
+colnames(sensitivity) <- cols
+```
+
+```{r fig.width=15, fig.height=8}
+boxplot(test.error.rate, ylab = "%", xlab = "model", main = "Test Error Rate Comparison")
+boxplot(sensitivity, ylab = "%", xlab = "model", main = "Sensitivity Comparison")
+boxplot(specificity, ylab = "%", xlab = "model", main = "Specificity Comparison")
+```
+
+The data was resampled 100 times using 30% of the data as a test data set and 70% as a training data set.  
+
+The test error rates for logistic regression and LDA are unacceptably high.  These same models are had low sensitivity which means it often does not detect when a phone is at location 3.  They also have a lower specificity with a wide variance.  Although the range of values is still in the high 80's to mid-90's this indicates these models are inconsisent and poor in comparison to the other models by determining too many phones are at location 3 when they truly are not.
+
+QDA had the highest specificity so it was very good at not falsey identifying a phone at location 3 when it was indeed not there.  Its sensitivity and test error rates were also markedly better than LDA and logistic regression but still not as good as any of the KNN models.
+
+The test error rates for the KNN methods were all very low and very tight.  The KNN with n=1 had a slightly lower test error rate than the others.
+
+The sensitivities of each KNN method were very similar with good results in terms of median and spread.  The KNN with n=1 had a slightly wider sensitivity than the other KNN models.  This is because the output of the KNN with n=1 prediction is based soley on one data point.  The more n's stabilize the spread of the model.
+
+The specificity of the KNN with n=1 performed higher than the other KNN models but not as good as the QDA model.  The specificity of the KNN with n=1 also had a tighter variance and is therefore more consistent in its predictions.  
+
+In summary, depending on what the end goal of the predicition will be used for and what the stakeholder's needs are, there are several models that could be chosen.  If the goal is to be right the absolute most on any one guess, then the KNN with n=1 model is the right tool.  If the goal is to very accurately and consistently know if a phone is truly in location 3 than KNN with n=7 is the best choice.  If the goal is to minimize the number of times the model incorrectly states a phone is at location 3 when indeed it is not, then the QDA model is optimal.  If there are multiple stakeholders with multiple points of view looking to compromise then the KNN wiht n=1 does a good job balancing the three statistics.  
+
+# Extra 5 points problem: naive Bayes classifier
+
+Fit naive Bayes classifier (see lecture slides for examples of using `naiveBayes` function from package `e1071`) to the WiFi localization dataset with binary (location=3 or not) outcome and assess its performance on test data by resampling along with logistic regression, LDA, QDA and KNN in the Problem 4 above.
+
+# Extra 10 points problem: interaction terms in logistic regression
+
+Add pairwise interaction terms to the logistic regression model fit in the Problem 1 above and evaluate impact of their addition on training **and** test error.  You can add all pairwise interaction terms or a subset of them, in which case the rationale behind selecting such a subset has to be described in your solution.

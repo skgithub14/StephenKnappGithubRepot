@@ -1,0 +1,380 @@
+---
+title: "CSCI E-63C Week 12 Problem Set"
+output:
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+library(ISLR)
+library(e1071)
+library(randomForest)
+library(class)
+library(ggplot2)
+library(GGally)
+library(car)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Preface
+
+This week problem set will explore behavior of support vector classifiers and SVMs (following the distinction made in ISLR) on WiFi localization dataset from UCI ML archive.  We worked with it on multiple occasions before (most recently two weeks ago evaluating performance of logistic regression, discriminant analysis and KNN on it).  As two weeks ago we are going to convert the four-levels outcome in the data file to the binary one indicating localization at the third location:
+
+```{r wifiExample,fig.width=8,fig.height=8,warning=FALSE}
+wifiLocDat <- read.table("wifi_localization.txt",sep="\t")
+colnames(wifiLocDat) <- c(paste0("WiFi",1:7),"Loc")
+ggpairs(wifiLocDat,aes(colour=factor(Loc)))
+wifiLocDat[,"Loc3"] <- factor(wifiLocDat[,"Loc"]==3)
+wifiLocDat <- wifiLocDat[,colnames(wifiLocDat)!="Loc"]
+dim(wifiLocDat)
+summary(wifiLocDat)
+head(wifiLocDat)
+```
+
+Here we will use SVM implementation available in library `e1071` to fit classifiers with linear and radial (polynomial for extra points) kernels and compare their relative performance as well as to that of random forest and KNN.
+
+# Problem 1 (20 points): support vector classifier (i.e. using linear kernel) 
+
+Use `svm` from library `e1071` with `kernel="linear"` to fit classifier (e.g. ISLR Ch.9.6.1) to the entire WiFi localization dataset setting parameter `cost` to 0.001, 1, 1000 and 1 mln.  Describe how this change in parameter `cost` affects model fitting process (hint: the difficulty of the underlying optimization problem increases with cost -- can you explain what drives it?) and its outcome (how does the number of support vectors change with `cost`?) and what are the implications of that.  Explain why change in `cost` value impacts number of support vectors found. (Hint: there is an answer in ISLR.)  Use `tune` function from library `e1071` (see ISLR Ch.9.6.1 for details and examples of usage) to determine approximate value of cost (in the range between 0.1 and 100 -- the suggested range spanning ordes of magnitude should hint that the density of the grid should be approximately logarithmic -- e.g. 1, 3, 10, ... or 1, 2, 5, 10, ... etc.) that yields the lowest error in cross-validation employed by `tune`.  Setup a resampling procedure repeatedly splitting entire dataset into training and test, using training data to `tune` cost value and test dataset to estimate classification error. Report and discuss distributions of test errors from this procedure and selected values of `cost`.
+
+```{r}
+# cost=0.001:
+svmfit <- svm(Loc3~., data=wifiLocDat, kernel="linear", cost=0.001, scale=TRUE)
+summary(svmfit)
+table(predict(svmfit),wifiLocDat$Loc3)
+
+# cost=1:
+svmfit <- svm(Loc3~., data=wifiLocDat, kernel="linear", cost=1, scale=TRUE)
+summary(svmfit)
+table(predict(svmfit),wifiLocDat$Loc3)
+
+# cost=1000:
+svmfit <- svm(Loc3~., data=wifiLocDat, kernel="linear", cost=1000, scale=TRUE)
+summary(svmfit)
+table(predict(svmfit),wifiLocDat$Loc3)
+
+# cost=1,000,000:
+svmfit <- svm(Loc3~., data=wifiLocDat, kernel="linear", cost=1000000, scale=TRUE)
+summary(svmfit)
+table(predict(svmfit),wifiLocDat$Loc3)
+```
+
+
+The number of support vectors decreases as cost increases.  Each support vector created in a model adds to the cost and that cost value cannot be higher than what is specified as a hyperparameter in the function call.  Therefore a very high cost will have fewer support vectors and will likely be underfitting the model.  It will also tend to have a high bias and low variance.  A very low cost will allow the model to utilize many support vectors which could lead to overfitting with a high variance and low bias.  The cost must be tuned to optimize the model's accuracy, specificity, and/or sensitivity.
+
+Note that for the cost values of 1000 and 1000000 the model produced warnings that the maximum number of iterations was exceeded therefore the model did not converge.
+
+```{r}
+# tune cost by cross-validation:
+set.seed(1)
+tune.out <- tune(svm, Loc3~., data=wifiLocDat, kernel="linear", 
+                 ranges=list(cost=c(0.001, 0.01, 0.1, 1, 5, 10, 100)))
+summary(tune.out)
+```
+
+```{r}
+# best model:
+bestmod <- tune.out$best.model
+summary(bestmod)
+
+# denser grid around minimum:
+tune.out.1 <- tune(svm, Loc3~., data=wifiLocDat, kernel="linear", 
+                   ranges=list(cost=c(50, 80, 100)))
+summary(tune.out.1)
+```
+
+No error difference from 50 to 100 therefore I chose cost value of 100 as the best model.
+
+```{r}
+iterations <- 50
+data.point.index <- seq(1,nrow(wifiLocDat))
+test.data.size <- 0.25 * nrow(wifiLocDat)
+errors <- numeric()
+vectors <- numeric()
+costs <- numeric()
+
+for (i in 1:iterations){
+    test.data.index <- sample(data.point.index, size = test.data.size, 
+                              replace = FALSE)
+    test.data <- wifiLocDat[test.data.index,]
+    train.data <- wifiLocDat[-test.data.index,]
+    tune.out <- tune(svm, Loc3~., data=train.data, kernel="linear", 
+                     ranges=list(cost=c(.001, .01, 1, 5, 10, 100)))
+    costs[i] <- tune.out$best.parameters[1,1]
+    svmfit <- svm(Loc3~., data=train.data, kernel="linear", 
+                  cost=tune.out$best.parameters[1,1], scale=TRUE)
+    ypred <- predict(svmfit, test.data)
+    tt <- table(predict=ypred, truth=test.data$Loc3)
+    errors[i] <- sum(tt[row(tt) != col(tt)]) / sum(tt)
+    vectors[i] <- svmfit$tot.nSV
+}
+```
+
+```{r}
+hist(vectors, breaks = 5)
+hist(errors, breaks = 5)
+hist(costs, breaks = 100)
+
+summary(vectors)
+summary(errors)
+summary(costs)
+
+boxplot(errors~costs)
+plot(vectors, errors)
+boxplot(vectors~costs)
+```
+
+At the optimized cost value of 100 the error rate is around 22% and has a tigher spread relative to the other options.  50 iterations appears to adequately show the spread of the data.  
+
+Note that the 0.001 has the highest error rate on the test data.  This is because there are so many support vectors that the data is overfitted on the training data and therefore performs poorly on the test data.  
+
+The spread of the errors decreases from cost = 1 to cost = 100.  This indicates the model is stabilizing as the cost increases.  We also see a decrease in median error rate over this range of costs.  As the cost increases, there are less support vectors and therefore there is lower variance.
+
+
+# Problem 2 (10 points): comparison to random forest
+
+Fit random forest classifier on the entire WiFi localization dataset with default parameters.  Calculate resulting misclassification error as reported by the confusion matrix in random forest output.  Explain why error reported in random forest confusion matrix represents estimated test (as opposed to train) error of the procedure.  Compare resulting test error to that for support vector classifier obtained above and discuss results of such comparison.
+
+```{r}
+iterations <- 100
+data.point.index <- seq(1,nrow(wifiLocDat))
+test.data.size <- 0.25 * nrow(wifiLocDat)
+errors <- numeric()
+
+for (i in 1:iterations){
+    test.data.index <- sample(data.point.index, size = test.data.size, 
+                              replace = FALSE)
+    test.data <- wifiLocDat[test.data.index,]
+    train.data <- wifiLocDat[-test.data.index,]
+    rfRes <- randomForest(train.data[,1:7],train.data[,8])
+    tt <- table(test.data[,8],predict(rfRes,newdata=test.data[,1:7]))
+    errors[i] <- sum(tt[row(tt) != col(tt)]) / sum(tt)
+}
+```
+
+```{r}
+summary(errors)
+```
+
+```{r}
+parameter.placeholder <- rep(NA, length(errors))
+rf.results <- cbind(errors, parameter.placeholder)
+colnames(rf.results) <- c("errors", "parameter")
+type.vector <- rep("rf", nrow(rf.results))
+rf.results <- cbind(rf.results,type.vector)
+rf.results <- as.data.frame(rf.results)
+rf.results$errors <- as.numeric(as.character(rf.results$errors))
+rf.results$errors <- 100 * rf.results$errors
+head(rf.results)
+```
+
+
+The mean misclassification error rate for the random forest is 1.436% which is significantly better than the best SVM from problem 1 at 18.6%.
+
+The error rate represents the estimated test error rate because for each run of the model I split the data into test and train sets and calculated the error only on train data points.  
+
+# Problem 3 (10 points): Comparison to cross-validation tuned KNN predictor
+
+Use convenience wrapper `tune.knn` provided by the library `e1071` on the entire dataset to determine optimal value for the number of the nearest neighbors 'k' to be used in KNN classifier.  Consider our observations from week 9 problem set when choosing range of values of `k` to be evaluated by `tune.knn`.  Setup resampling procedure similar to that used above for support vector classifier that will repeatedly: a) split WiFi localization dataset into training and test, b) use `tune.knn` on training data to determine optimal `k`, and c) use `k` estimated by `tune.knn` to make KNN classifications on test data.  Report and discuss distributions of test errors from this procedure and selected values of `k`, compare them to those obtained for random forest and support vector classifier above.
+
+```{r}
+tuned.knn <- tune.knn(wifiLocDat[,1:7], wifiLocDat[,8], k=seq(1,10))
+tuned.knn
+```
+
+```{r}
+names(tuned.knn)
+```
+
+
+
+```{r}
+iterations <- 1000
+data.point.index <- seq(1,nrow(wifiLocDat))
+test.data.size <- 0.25 * nrow(wifiLocDat)
+errors <- numeric()
+ks <- numeric()
+
+for (i in 1:iterations){
+    test.data.index <- sample(data.point.index, size = test.data.size, 
+                              replace = FALSE)
+    test.data <- wifiLocDat[test.data.index,]
+    train.data <- wifiLocDat[-test.data.index,]
+    tuned.knn <- tune.knn(train.data[,1:7], train.data[,8], k=seq(1,10))
+    ks[i] <- tuned.knn$best.parameters[1,1]
+    knn.model <- knn(train = train.data[,1:7], test = test.data[,1:7], 
+                     cl = train.data[,8], k=tuned.knn$best.parameters[1,1])
+    predicted <- knn.model
+    truth <- test.data[,8]
+    errors[i] <- 100-(signif(sum(truth==predicted)*100/length(truth),3))
+}
+```
+
+```{r}
+summary(errors)
+hist(errors)
+summary(ks)
+hist(ks)
+boxplot(errors~ks)
+```
+
+Here we see that KNN with k=1 and 3 perform similarly with error rates below 1.5%.  These are very similar results to the random forest method in terms of the mean, median, and ranges.  Error begins to increase significantly after k=5.  
+
+The optimized KNN method performs significantly better than the SVM method.  
+
+```{r}
+knn.results <- cbind(errors, ks)
+colnames(knn.results) <- c("errors", "parameter")
+type.vector <- rep("knn", nrow(knn.results))
+knn.results <- cbind(knn.results,type.vector)
+knn.results <- as.data.frame(knn.results)
+knn.results$errors <- as.numeric(as.character(knn.results$errors))
+head(knn.results)
+```
+
+
+# Problem 4 (20 points): SVM with radial kernel
+
+## Sub-problem 4a (10 points): impact of $gamma$ on classification surface
+
+*Plot* SVM model fit to the WiFi localization dataset using (for the ease of plotting) *only the first and the second attributes* as predictor variables, `kernel="radial"`, `cost=10` and `gamma=5` (see ISLR Ch.9.6.2 for an example of that done with a simulated dataset).  You should be able to see in the resulting plot the magenta-cyan (or, in more recent versions of `e1071` -- yellow-brown) classification boundary as computed by this model.  Produce the same kinds of plots using 0.5 and 50 as values of `gamma` also.  Compare classification boundaries between these three plots and describe how they are impacted by the change in the value of `gamma`.  Can you trace it back to the role of `gamma` in the equation introducing it with the radial kernel in ISLR?
+
+```{r}
+trimmed.data <- wifiLocDat[,-c(3,4,5,6,7)]
+```
+
+
+```{r}
+# gamma=5:
+svmfit <- svm(Loc3~., data=trimmed.data, kernel="radial", cost=10, 
+              gamma=5, scale=FALSE)
+summary(svmfit)
+table(predict(svmfit),trimmed.data$Loc3)
+plot(svmfit, trimmed.data)
+
+# gamma=0.5:
+svmfit <- svm(Loc3~., data=trimmed.data, kernel="radial", cost=10, 
+              gamma=0.5, scale=FALSE)
+summary(svmfit)
+table(predict(svmfit),trimmed.data$Loc3)
+plot(svmfit, trimmed.data)
+
+# gamma=50:
+svmfit <- svm(Loc3~., data=trimmed.data, kernel="radial", cost=10, 
+              gamma=50, scale=FALSE)
+summary(svmfit)
+table(predict(svmfit),trimmed.data$Loc3)
+plot(svmfit, trimmed.data)
+```
+
+We see a splotchy patter for the decision boundry for gamma=0.5 which indicates overfitting.  For gamma=50 we see there is no decision boundry which indicates severe underfitting and a 0 sensitivity test.  
+
+Gamma=5 has distinct decision boundry that appears to perform relatively well in terms of encompassing the correct points.  
+
+The error rates of all three models appears almost identifical however with the gamma=5 model marginally worse than the other two.  This indicates that cost is a much stronger predictor of accuracy than gamma.
+
+In the kernel formula gamma is raised to a negative exponential.  What this means is that as the value of gamma increases the kernel size for the same summation of x values decreases signficantly.  As the kernal approaches very small or very large values it tends to overfit or underfit the data respectively.  
+
+
+
+## Sub-problem 4b (10 points): test error for SVM with radial kernel
+
+Similar to how it was done above for support vector classifier (and KNN), set up a resampling process that will repeatedly: a) split the entire dataset (using all attributes as predictors) into training and test datasets, b) use `tune` function to determine optimal values of `cost` and `gamma` and c) calculate test error using these values of `cost` and `gamma`.  Consider what you have learned above about the effects of the parameters `cost` and `gamma` to decide on the starting ranges of their values to be evaluated by `tune`. Additionally, experiment with different sets of their values and discuss in your solution the results of it and how you would go about selecting those ranges starting from scratch.  Present resulting test error graphically, compare it to that of support vector classifier (with linear kernel), random forest and KNN classifiers obtained above and discuss results of these comparisons. 
+
+```{r}
+iterations <- 50
+data.point.index <- seq(1,nrow(wifiLocDat))
+test.data.size <- 0.25 * nrow(wifiLocDat)
+errors <- numeric()
+vectors <- numeric()
+costs <- numeric()
+gammas <- numeric()
+
+for (i in 1:iterations){
+    test.data.index <- sample(data.point.index, size = test.data.size, 
+                              replace = FALSE)
+    test.data <- wifiLocDat[test.data.index,]
+    train.data <- wifiLocDat[-test.data.index,]
+    tune.out <- tune(svm, Loc3~., data=train.data, kernel="radial", 
+                     ranges=list(cost=c(50,70,100), gamma=c(1,5,10)))
+    costs[i] <- tune.out$best.parameters[1,1]
+    gammas[i] <- tune.out$best.parameters[1,2]
+    svmfit <- svm(Loc3~., data=train.data, kernel="radial", 
+                  cost=tune.out$best.parameters[1,1], 
+                  gamma=tune.out$best.parameters[1,2])
+    ypred <- predict(svmfit, test.data)
+    tt <- table(predict=ypred, truth=test.data$Loc3)
+    errors[i] <- sum(tt[row(tt) != col(tt)]) / sum(tt)
+    vectors[i] <- svmfit$tot.nSV
+}
+```
+
+```{r}
+hist(vectors, breaks = 5)
+hist(errors, breaks = 5)
+
+print("vectors")
+summary(vectors)
+print("errors")
+summary(errors)
+print("costs")
+summary(costs)
+print("gammas")
+summary(gammas)
+
+boxplot(errors~gammas)
+points(as.factor(gammas), errors,col="blue")
+
+boxplot(errors~costs)
+points(as.factor(costs), errors, col="green")
+
+boxplot(vectors~gammas)
+points(as.factor(gammas), vectors, col="brown")
+
+boxplot(vectors~costs)
+points(as.factor(costs), vectors, col="orange")
+
+plot(errors~vectors)
+```
+
+For every trial, the model picked gamma=1 and cost=50 as the optimal parameter over 50 trials.  These parameters are highly stable over 50 trials due to the consistency of the optimal parameter selection.
+
+Over 50 trials, we see normally distributed errors and number of support vectors which also indicates that the number of trials is correct.
+
+The range of errors is from .4% to 2.8% which makes this model highly competitive with random forest and knn.  The mean error is 1.75% which corresponds to a significant range of number of support vectors which again indicates stability.
+
+Note that the vector distribution has normal-like distributions in relation to the gamma and costs however it the relationship between error and cost and error and gamma is uniform.  
+
+```{r}
+svm.results <- cbind(errors, costs)
+colnames(svm.results) <- c("errors", "parameter")
+type.vector <- rep("svm", nrow(svm.results))
+svm.results <- cbind(svm.results,type.vector)
+svm.results <- as.data.frame(svm.results)
+svm.results$errors <- as.numeric(as.character(svm.results$errors))
+svm.results$errors <- 100 * svm.results$errors
+head(svm.results)
+```
+
+```{r}
+svm.results$parameter <- NA
+results <- rbind(rf.results, knn.results, svm.results)
+colnames(results) <- c("error", "k", "model.type")
+head(results)
+```
+
+```{r fig.height=5, fig.width=10}
+ggplot(results, 
+       aes(x=model.type, y=error, color=k)) + 
+    geom_boxplot()
+```
+
+Here we see that random forest and a knn model with k=1 or k=3 provides almost identical results.  The knn model has a slight edge in that it's upper quantile is lower than the random forest upper quantile and its median is just slightly lower than random forest.  
+
+The SVM model is competitive however marginally worse than random forest and optimized knn models.  
+
+# Extra 5 points problem: SVM with polynomial kernel
+
+Repeat what was done above (plots of decision boundaries for various interesting values of tuning parameters and test error for their best values estimated from training data) using `kernel="polynomial"`.   Determine ranges of `coef0`, `degree`, `cost` and `gamma` to be evaluated by `tune`.  Present and discuss resulting test error and how it compares to linear and radial kernels and those of random forest and KNN.
+
