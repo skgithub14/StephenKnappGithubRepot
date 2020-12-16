@@ -1,0 +1,17 @@
+This folder contains examples of my machine learning code in Python using TensorFlow, Keras and PyTorch for a variety of applications
+to include regression, classification, computer vision, NLP and time series.
+
+The deep learning network types of neural networks applied in this code include: 
+- Long-short Term Memory (LSTM)
+- Recurrent Neural Network (RNN) 
+- Convolutional Neural Network (CNN)
+- Generative Adversarial Network (GAN)
+- Auto-encoders (AE) including denoising AEs
+
+Index:
+ComputerVision ImageManipulation, ImageFilter
+RNNs TimeSeries
+RegressionModeling
+NLP
+ComputerVision AutoEncoders
+AudioSignalProcessing SpeechRecognition
