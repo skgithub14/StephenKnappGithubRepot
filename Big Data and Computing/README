@@ -2,8 +2,8 @@ This folder contains examples of my coding related to computing and analytics fo
 
 Index:
 
-Git - simple example of apply version control to code using Git
-Computing - examples of optimized programming through vectorization of code, parallel computing and apply C++ using Rccp code.
+Git Version Control - simple example of apply version control to code using Git
+Optimized Code Computing - examples of optimized programming through vectorization of code, parallel computing and apply C++ using Rccp code.
 Cluster Computing - Geospatial data anaylzed using cluster computing, job arrays and scripting.
-Database - simple SQL queries applied to big data through R's sqlite package.
+SQL Queries - simple SQL queries applied to big data through R's sqlite package.
 Cloud Computing - creation of a virtual machine (VM) and docker image using the Google Cloud Platform (GCP)
